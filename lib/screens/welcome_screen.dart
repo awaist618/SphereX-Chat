@@ -23,9 +23,25 @@ class _WelcomeScreenState extends State<WelcomeScreen> {
           // 2. Stars
           const StarsBackground(),
 
+
+
           // 3. Logo
-          const Center(
-            child: SpherexLogo(),
+          Center(
+            child: Column(mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const SpherexLogo(), const SizedBox(height: 40),
+              RichText(text: const TextSpan(style: TextStyle(fontSize: 36 ,fontWeight: FontWeight.bold),
+              children: [
+                TextSpan(
+                  text: "SphereX", style: TextStyle(color: Colors.white)
+                ),TextSpan(
+                  text: "Chat",style: TextStyle(color: Color(0xFF7C4DFF))
+                )
+              ]
+              ),
+              ),
+            ],
+            ),
           ),
         ],
       ),
