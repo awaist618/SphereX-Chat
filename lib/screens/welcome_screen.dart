@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../widgets/stars_background.dart';
 import '../widgets/spherex_logo.dart';
+import 'login_screen.dart';
 
 class WelcomeScreen extends StatefulWidget {
   const WelcomeScreen({super.key});
@@ -41,6 +42,21 @@ class _WelcomeScreenState extends State<WelcomeScreen> with TickerProviderStateM
     )..repeat(reverse: true);
 
     _fadeController.forward();
+
+    // Navigate to Login Screen after 3.5 seconds
+    Future.delayed(const Duration(milliseconds: 3500), () {
+      if (mounted) {
+        Navigator.of(context).pushReplacement(
+          PageRouteBuilder(
+            pageBuilder: (context, animation, secondaryAnimation) => const LoginScreen(),
+            transitionsBuilder: (context, animation, secondaryAnimation, child) {
+              return FadeTransition(opacity: animation, child: child);
+            },
+            transitionDuration: const Duration(milliseconds: 800),
+          ),
+        );
+      }
+    });
   }
 
   @override
