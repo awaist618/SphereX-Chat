@@ -90,8 +90,8 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                       ),
                       validator: (value) {
-                        if (value == null || value.length < 6) {
-                          return 'Password must be at least 6 characters';
+                        if (value == null || value.length < 8) {
+                          return 'Password must be at least 8 characters';
                         }
                         return null;
                       },
