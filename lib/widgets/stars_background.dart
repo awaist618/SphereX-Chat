@@ -72,7 +72,7 @@ class _StarsPainter extends CustomPainter {
 
     for (var star in stars) {
       final opacity = (math.sin(animationValue * math.pi * 2 * star.blinkSpeed) + 1) / 2;
-      paint.color = Colors.white.withOpacity(opacity * 0.7);
+      paint.color = Colors.white.withValues(alpha: opacity * 0.7);
       canvas.drawCircle(
         Offset(star.x * size.width, star.y * size.height),
         star.size,

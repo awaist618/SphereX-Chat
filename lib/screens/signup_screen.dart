@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 import '../widgets/stars_background.dart';
+import 'home_screen.dart';
+import 'otp_verification_screen.dart';
+import '../services/api_service.dart';
 
 class SignupScreen extends StatefulWidget {
   const SignupScreen({super.key});
@@ -11,14 +14,17 @@ class SignupScreen extends StatefulWidget {
 class _SignupScreenState extends State<SignupScreen> {
   final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
+  final _usernameController = TextEditingController();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
   bool _isPasswordVisible = false;
+  bool _isLoading = false;
 
   @override
   void dispose() {
     _nameController.dispose();
+    _usernameController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
@@ -67,6 +73,23 @@ class _SignupScreenState extends State<SignupScreen> {
                       validator: (value) {
                         if (value == null || value.isEmpty) {
                           return 'Please enter your name';
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 20),
+
+                    // Username Field
+                    TextFormField(
+                      controller: _usernameController,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: _buildInputDecoration("Username (e.g. Awais)", Icons.alternate_email),
+                      validator: (value) {
+                        if (value == null || value.isEmpty) {
+                          return 'Please enter a username';
+                        }
+                        if (value.length < 3) {
+                          return 'Username too short';
                         }
                         return null;
                       },
@@ -138,7 +161,7 @@ class _SignupScreenState extends State<SignupScreen> {
                     
                     // Sign Up Button
                     ElevatedButton(
-                      onPressed: _handleSignup,
+                      onPressed: _isLoading ? null : _handleSignup,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFF7C4DFF),
                         foregroundColor: Colors.white,
@@ -147,12 +170,14 @@ class _SignupScreenState extends State<SignupScreen> {
                           borderRadius: BorderRadius.circular(12),
                         ),
                         elevation: 5,
-                        shadowColor: const Color(0xFF7C4DFF).withOpacity(0.5),
+                        shadowColor: const Color(0xFF7C4DFF).withValues(alpha: 0.5),
                       ),
-                      child: const Text(
-                        "Sign Up",
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                      ),
+                      child: _isLoading 
+                        ? const CircularProgressIndicator(color: Colors.white)
+                        : const Text(
+                            "Sign Up",
+                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                          ),
                     ),
                     
                     const SizedBox(height: 20),
@@ -180,10 +205,10 @@ class _SignupScreenState extends State<SignupScreen> {
       prefixIcon: Icon(icon, color: const Color(0xFF7C4DFF)),
       suffixIcon: suffixIcon,
       filled: true,
-      fillColor: Colors.white.withOpacity(0.05),
+      fillColor: Colors.white.withValues(alpha: 0.05),
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(12),
-        borderSide: BorderSide(color: Colors.white.withOpacity(0.1)),
+        borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(12),
@@ -196,11 +221,48 @@ class _SignupScreenState extends State<SignupScreen> {
     );
   }
 
-  void _handleSignup() {
+  void _handleSignup() async {
     if (_formKey.currentState!.validate()) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Creating your secure account...')),
+      setState(() => _isLoading = true);
+      
+      final result = await ApiService.requestOtp(
+        _emailController.text, 
+        _usernameController.text,
+        _passwordController.text
       );
+      
+      setState(() => _isLoading = false);
+
+      if (result['success']) {
+        if (!mounted) return;
+        
+        if (result['needsVerification']) {
+          // Normal flow: Email confirmation is ON
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (context) => OtpVerificationScreen(
+                email: _emailController.text,
+                username: _usernameController.text,
+                password: _passwordController.text,
+              ),
+            ),
+          );
+        } else {
+          // "Instant" flow: Email confirmation is OFF
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Account created successfully!')),
+          );
+          Navigator.of(context).pushAndRemoveUntil(
+            MaterialPageRoute(builder: (context) => HomeScreen()),
+            (route) => false,
+          );
+        }
+      } else {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(result['error'] ?? 'Signup failed')),
+        );
+      }
     }
   }
 }

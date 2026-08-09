@@ -68,8 +68,6 @@ class _WelcomeScreenState extends State<WelcomeScreen> with TickerProviderStateM
 
   @override
   Widget build(BuildContext context) {
-    final screenSize = MediaQuery.of(context).size;
-    
     return Scaffold(
       backgroundColor: const Color(0xFF0b1020),
       body: Stack(
@@ -96,14 +94,14 @@ class _WelcomeScreenState extends State<WelcomeScreen> with TickerProviderStateM
                     shape: BoxShape.circle,
                     boxShadow: [
                       BoxShadow(
-                        color: const Color(0xFF7C4DFF).withOpacity(0.1 + (_pulseController.value * 0.1)),
+                        color: const Color(0xFF7C4DFF).withValues(alpha: 0.1 + (_pulseController.value * 0.1)),
                         blurRadius: 50,
                         spreadRadius: 10,
                       ),
                     ],
                     gradient: RadialGradient(
                       colors: [
-                        const Color(0xFF7C4DFF).withOpacity(0.3),
+                        const Color(0xFF7C4DFF).withValues(alpha: 0.3),
                         Colors.transparent,
                       ],
                     ),
@@ -215,12 +213,12 @@ class _LoadingIndicatorState extends State<LoadingIndicator> with SingleTickerPr
           width: 40,
           height: 4,
           decoration: BoxDecoration(
-            color: const Color(0xFF7C4DFF).withOpacity(opacity),
+            color: const Color(0xFF7C4DFF).withValues(alpha: opacity),
             borderRadius: BorderRadius.circular(2),
             boxShadow: [
               if (opacity > 0.8)
                 BoxShadow(
-                  color: const Color(0xFF7C4DFF).withOpacity(0.5),
+                  color: const Color(0xFF7C4DFF).withValues(alpha: 0.5),
                   blurRadius: 8,
                 ),
             ],
