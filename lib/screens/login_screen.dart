@@ -4,6 +4,7 @@ import '../widgets/stars_background.dart';
 import 'signup_screen.dart';
 import 'home_screen.dart';
 import '../services/api_service.dart';
+import '../config.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -19,8 +20,7 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _isPasswordVisible = false;
   bool _isLoading = false;
   final GoogleSignIn _googleSignIn = GoogleSignIn(
-    // ⚠️ REQUIRED FOR WINDOWS: Get this from Google Cloud Console -> Credentials -> Web Client ID
-    clientId: '574288772268-tfik0t52208k57rcbn12fc8789lknvck.apps.googleusercontent.com',
+    clientId: AppConfig.googleClientId,
   );
 
   @override

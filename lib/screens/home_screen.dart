@@ -18,13 +18,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   int _selectedIndex = 0;
-  List<Map<String, dynamic>> _searchResults = [];
-  List<Map<String, dynamic>> _conversations = [];
-  bool _isSearching = false;
-  bool _isLoading = true;
-  final _searchController = TextEditingController();
   String? _myUsername;
-  RealtimeChannel? _convChannel;
 
   final List<Widget> _tabs = [
     const HomeScreenContent(),
@@ -96,7 +90,7 @@ class HomeScreenContent extends StatefulWidget {
 }
 
 class _HomeScreenContentState extends State<HomeScreenContent> {
-  List<Map<String, dynamic>> _searchResults = [];
+  Map<String, List<Map<String, dynamic>>> _searchResults = {'users': [], 'groups': [], 'messages': []};
   List<Map<String, dynamic>> _conversations = [];
   bool _isSearching = false;
   bool _isLoading = true;
@@ -151,6 +145,7 @@ class _HomeScreenContentState extends State<HomeScreenContent> {
     if (_convChannel != null) {
       Supabase.instance.client.removeChannel(_convChannel!);
     }
+    _searchController.dispose();
     super.dispose();
   }
 
@@ -158,12 +153,12 @@ class _HomeScreenContentState extends State<HomeScreenContent> {
     if (query.isEmpty) {
       setState(() {
         _isSearching = false;
-        _searchResults = [];
+        _searchResults = {'users': [], 'groups': [], 'messages': []};
       });
       return;
     }
     setState(() => _isSearching = true);
-    final results = await ApiService.searchUsers(query);
+    final results = await ApiService.globalSearch(query);
     setState(() => _searchResults = results);
   }
 
@@ -174,7 +169,7 @@ class _HomeScreenContentState extends State<HomeScreenContent> {
         children: [
           _buildHeader(),
           _buildSearchBar(),
-          _buildCategorySelector(),
+          if (!_isSearching) _buildCategorySelector(),
           Expanded(
             child: _isLoading 
               ? const Center(child: CircularProgressIndicator(color: Color(0xFF2979FF)))
@@ -216,12 +211,31 @@ class _HomeScreenContentState extends State<HomeScreenContent> {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
       child: Container(
-        decoration: BoxDecoration(color: const Color(0xFF16233A), borderRadius: BorderRadius.circular(15)),
+        decoration: BoxDecoration(
+          color: const Color(0xFF16233A), 
+          borderRadius: BorderRadius.circular(15),
+          border: Border.all(color: _isSearching ? const Color(0xFF2979FF).withValues(alpha: 0.3) : Colors.transparent),
+        ),
         child: TextField(
           controller: _searchController,
           onChanged: _handleSearch,
-          style: const TextStyle(color: Colors.white),
-          decoration: const InputDecoration(hintText: "Search chats, users, groups...", hintStyle: TextStyle(color: Colors.white38), prefixIcon: Icon(Icons.search, color: Colors.white38), border: InputBorder.none, contentPadding: EdgeInsets.symmetric(vertical: 15)),
+          style: const TextStyle(color: Colors.white, fontSize: 15),
+          decoration: InputDecoration(
+            hintText: "Search chats, users, groups...", 
+            hintStyle: const TextStyle(color: Colors.white38, fontSize: 15), 
+            prefixIcon: const Icon(Icons.search, color: Colors.white38, size: 20), 
+            suffixIcon: _searchController.text.isNotEmpty 
+              ? IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white38, size: 18), 
+                  onPressed: () {
+                    _searchController.clear();
+                    _handleSearch("");
+                  },
+                )
+              : null,
+            border: InputBorder.none, 
+            contentPadding: const EdgeInsets.symmetric(vertical: 12)
+          ),
         ),
       ),
     );
@@ -310,17 +324,86 @@ class _HomeScreenContentState extends State<HomeScreenContent> {
   }
 
   Widget _buildSearchResults() {
-    if (_searchResults.isEmpty) return const Center(child: Text("No users found", style: TextStyle(color: Colors.white38)));
-    return ListView.builder(
-      itemCount: _searchResults.length,
-      itemBuilder: (context, index) {
-        final user = _searchResults[index];
-        final username = user['username'] as String;
-        return ListTile(
-          leading: CircleAvatar(backgroundColor: const Color(0xFF16233A), backgroundImage: user['profilePic'] != null ? NetworkImage(user['profilePic']) : null, child: user['profilePic'] == null ? const Icon(Icons.person, color: Colors.white) : null),
-          title: Text(username, style: const TextStyle(color: Colors.white)),
-          onTap: () { Navigator.of(context).push(MaterialPageRoute(builder: (context) => ChatScreen(username: username))); },
-        );
+    final users = _searchResults['users'] ?? [];
+    final groups = _searchResults['groups'] ?? [];
+    final messages = _searchResults['messages'] ?? [];
+
+    if (users.isEmpty && groups.isEmpty && messages.isEmpty) {
+      return const Center(child: Text("No results found", style: TextStyle(color: Colors.white38)));
+    }
+
+    return ListView(
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      children: [
+        if (users.isNotEmpty) ...[
+          _buildSearchSectionHeader("People"),
+          ...users.map((u) => _buildUserSearchResult(u)),
+        ],
+        if (groups.isNotEmpty) ...[
+          _buildSearchSectionHeader("Groups"),
+          ...groups.map((g) => _buildGroupSearchResult(g)),
+        ],
+        if (messages.isNotEmpty) ...[
+          _buildSearchSectionHeader("Messages"),
+          ...messages.map((m) => _buildMessageSearchResult(m)),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildSearchSectionHeader(String title) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(15, 25, 15, 12),
+      child: Row(
+        children: [
+          Text(title.toUpperCase(), style: const TextStyle(color: Color(0xFF2979FF), fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 1.5)),
+          const SizedBox(width: 10),
+          Expanded(child: Divider(color: const Color(0xFF2979FF).withValues(alpha: 0.1), thickness: 1)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildUserSearchResult(Map<String, dynamic> user) {
+    final username = user['username'] as String;
+    return ListTile(
+      leading: CircleAvatar(backgroundColor: const Color(0xFF16233A), backgroundImage: user['profilePic'] != null ? NetworkImage(user['profilePic']) : null, child: user['profilePic'] == null ? const Icon(Icons.person, color: Colors.white) : null),
+      title: Text(username, style: const TextStyle(color: Colors.white)),
+      subtitle: Text(user['about'] ?? "Available", style: const TextStyle(color: Colors.white38, fontSize: 12)),
+      onTap: () {
+        setState(() => _isSearching = false);
+        Navigator.of(context).push(MaterialPageRoute(builder: (context) => ChatScreen(username: username)));
+      },
+    );
+  }
+
+  Widget _buildGroupSearchResult(Map<String, dynamic> group) {
+    return ListTile(
+      leading: CircleAvatar(backgroundColor: const Color(0xFF16233A), backgroundImage: group['avatar_url'] != null ? NetworkImage(group['avatar_url']) : null, child: group['avatar_url'] == null ? const Icon(Icons.groups, color: Colors.white) : null),
+      title: Text(group['name'], style: const TextStyle(color: Colors.white)),
+      onTap: () {
+        setState(() => _isSearching = false);
+        Navigator.of(context).push(MaterialPageRoute(builder: (context) => ChatScreen(username: group['name'], groupId: group['id'])));
+      },
+    );
+  }
+
+  Widget _buildMessageSearchResult(Map<String, dynamic> msg) {
+    final bool isMe = msg['sender_id'] == _myUsername;
+    final otherUser = isMe ? msg['receiver_id'] : msg['sender_id'];
+    
+    return ListTile(
+      leading: CircleAvatar(
+        radius: 20,
+        backgroundColor: const Color(0xFF2979FF).withValues(alpha: 0.1),
+        child: const Icon(Icons.message, color: Color(0xFF2979FF), size: 18),
+      ),
+      title: Text(otherUser ?? "Chat", style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
+      subtitle: Text(msg['content'] ?? "", maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white70, fontSize: 13)),
+      trailing: Text(DateFormat('MMM d').format(DateTime.parse(msg['created_at'])), style: const TextStyle(color: Colors.white24, fontSize: 10)),
+      onTap: () {
+        setState(() => _isSearching = false);
+        Navigator.of(context).push(MaterialPageRoute(builder: (context) => ChatScreen(username: otherUser ?? "")));
       },
     );
   }

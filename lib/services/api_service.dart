@@ -165,34 +165,84 @@ class ApiService {
     }
   }
 
+  static Future<bool> uploadGroupAvatar(String groupId, Uint8List fileBytes, String fileName) async {
+    try {
+      final path = 'group_avatars/${groupId}_$fileName';
+      await _supabase.storage.from('spherex').uploadBinary(path, fileBytes);
+      final url = _supabase.storage.from('spherex').getPublicUrl(path);
+      
+      await _supabase.from('groups').update({'avatar_url': url}).eq('id', groupId);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   // CONTACTS & SEARCH
-  static Future<List<Map<String, dynamic>>> searchUsers(String query) async {
+  static Future<Map<String, List<Map<String, dynamic>>>> globalSearch(String query) async {
     try {
       final myUsername = await getUsername() ?? "";
       final cleanQuery = query.replaceAll('@', '').trim();
-      if (cleanQuery.isEmpty) return [];
+      if (cleanQuery.isEmpty) return {'users': [], 'groups': [], 'messages': []};
 
-      final List<dynamic> data = await _supabase
+      // 1. Search Users
+      final List<dynamic> userData = await _supabase
           .from('profiles')
           .select()
-          .ilike('username', '%$cleanQuery%');
+          .ilike('username', '%$cleanQuery%')
+          .limit(5);
 
-      List<Map<String, dynamic>> results = [];
-      for (var user in data) {
+      List<Map<String, dynamic>> users = [];
+      for (var user in userData) {
         if (user['username'] == myUsername) continue;
-        String relationship = await _getRelationship(myUsername, user['username']);
-        results.add({
+        users.add({
           'username': user['username'],
           'about': user['about'],
           'profilePic': user['avatar_url'],
           'isOnline': user['is_online'],
-          'relationship': relationship
         });
       }
-      return results;
+
+      // 2. Search Groups (Only groups I'm a member of)
+      final memberData = await _supabase.from('group_members').select('group_id').eq('user_id', myUsername);
+      final myGroupIds = memberData.map((m) => m['group_id']).toList();
+
+      List<Map<String, dynamic>> groups = [];
+      if (myGroupIds.isNotEmpty) {
+        final List<dynamic> groupData = await _supabase
+            .from('groups')
+            .select()
+            .inFilter('id', myGroupIds)
+            .ilike('name', '%$cleanQuery%')
+            .limit(5);
+        groups = groupData.map((g) => Map<String, dynamic>.from(g)).toList();
+      }
+
+      // 3. Search Messages
+      final List<dynamic> msgData = await _supabase
+          .from('messages')
+          .select()
+          .or('sender_id.eq.$myUsername,receiver_id.eq.$myUsername')
+          .ilike('content', '%$cleanQuery%')
+          .order('created_at', ascending: false)
+          .limit(10);
+      
+      List<Map<String, dynamic>> messages = msgData.map((m) => Map<String, dynamic>.from(m)).toList();
+
+      return {
+        'users': users,
+        'groups': groups,
+        'messages': messages,
+      };
     } catch (e) {
-      return [];
+      return {'users': [], 'groups': [], 'messages': []};
     }
+  }
+
+  static Future<List<Map<String, dynamic>>> searchUsers(String query) async {
+    // Keep for backward compatibility or refactor searchUsers usages
+    final results = await globalSearch(query);
+    return results['users']!;
   }
 
   static Future<String> _getRelationship(String myUser, String otherUser) async {
@@ -268,7 +318,10 @@ class ApiService {
     try {
       String? fileUrl;
       if (fileBytes != null && fileName != null) {
-        final folder = type == 'audio' ? 'voice_messages' : 'chat_media';
+        String folder = 'chat_media';
+        if (type == 'audio') folder = 'voice_messages';
+        if (type == 'file') folder = 'documents';
+
         final path = '$folder/${DateTime.now().millisecondsSinceEpoch}_$fileName';
         await _supabase.storage.from('spherex').uploadBinary(path, fileBytes);
         fileUrl = _supabase.storage.from('spherex').getPublicUrl(path);
@@ -293,11 +346,28 @@ class ApiService {
         'content': text,
         'type': type,
         'file_url': fileUrl,
+        'file_name': fileName,
+        'file_size': fileBytes?.length,
         'reply_to': replyTo,
         'is_read': false,
       };
 
-      await _supabase.from('messages').insert(messageData);
+      final response = await _supabase.from('messages').insert(messageData).select().single();
+      
+      // Trigger notification
+      if (groupId == null) {
+        await createNotification(
+          userId: receiver,
+          type: 'message',
+          title: 'New Message from @$sender',
+          body: text.isNotEmpty ? text : (type == 'image' ? 'Sent a photo' : 'Sent a file'),
+          referenceId: response['id'].toString(),
+        );
+      } else {
+        // For groups, ideally notify all members except sender. 
+        // For now, let's keep it simple or implement a cloud function later.
+      }
+
       return true;
     } catch (e) {
       print('Send message error: $e');
@@ -396,6 +466,8 @@ class ApiService {
       'sender': m['sender_id'],
       'text': m['content'],
       'mediaUrl': m['file_url'],
+      'fileName': m['file_name'],
+      'fileSize': m['file_size'],
       'type': m['type'],
       'timestamp': m['created_at'],
       'reply_to': m['reply_to'],
@@ -500,7 +572,7 @@ class ApiService {
       final myUser = await getUsername();
       if (myUser == null) return false;
 
-      await _supabase.from('tasks').insert({
+      final res = await _supabase.from('tasks').insert({
         'title': title,
         'description': description,
         'assigned_to': assignedTo,
@@ -510,7 +582,19 @@ class ApiService {
         'conversation_id': conversationId,
         'group_id': groupId,
         'status': 'pending'
-      });
+      }).select().single();
+
+      // Trigger notification if assigned to someone else
+      if (assignedTo != myUser) {
+        await createNotification(
+          userId: assignedTo,
+          type: 'task',
+          title: 'New Task Assigned',
+          body: 'You were assigned: $title',
+          referenceId: res['id'].toString(),
+        );
+      }
+
       return true;
     } catch (e) {
       return false;
@@ -551,8 +635,48 @@ class ApiService {
     }
   }
 
+  static Future<Map<String, dynamic>?> getTaskContext(Map<String, dynamic> task) async {
+    try {
+      if (task['group_id'] != null) {
+        final group = await _supabase.from('groups').select().eq('id', task['group_id']).single();
+        return {
+          'name': group['name'],
+          'groupId': group['id'],
+        };
+      } else if (task['conversation_id'] != null) {
+        final myUser = await getUsername();
+        final participants = (task['conversation_id'] as String).split('_');
+        final otherUser = participants.firstWhere((p) => p != myUser);
+        return {
+          'name': otherUser,
+          'groupId': null,
+        };
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   // REAL-TIME HELPERS
-  static RealtimeChannel getMessageChannel(String user1, String user2, Function(Map<String, dynamic>) callback) {
+  static RealtimeChannel getMessageChannel(String user1, String user2, Function(Map<String, dynamic>) callback, {String? groupId}) {
+    if (groupId != null) {
+      return _supabase
+          .channel('group_chat:$groupId')
+          .onPostgresChanges(
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            table: 'messages',
+            filter: PostgresChangeFilter(
+              type: PostgresChangeFilterType.eq,
+              column: 'group_id',
+              value: groupId,
+            ),
+            callback: (payload) => callback(payload.newRecord),
+          )
+          .subscribe();
+    }
+    
     final convId = getConversationId(user1, user2);
     return _supabase
         .channel('chat:$convId')
@@ -570,28 +694,29 @@ class ApiService {
         .subscribe();
   }
 
-  static void sendTypingStatus(String user1, String user2, bool isTyping) {
+  static void sendTypingStatus(String sender, String target, bool isTyping, {String? groupId}) {
     _supabase.from('messages').insert({
       'conversation_id': 'typing_signal',
-      'sender_id': user1,
-      'receiver_id': user2,
+      'sender_id': sender,
+      'receiver_id': groupId == null ? target : null,
+      'group_id': groupId,
       'content': isTyping ? 'typing' : 'stopped',
       'type': 'system'
     });
   }
 
-  static RealtimeChannel getTypingChannel(String user1, String user2, Function(Map<String, dynamic>) callback) {
+  static RealtimeChannel getTypingChannel(String user1, String user2, Function(Map<String, dynamic>) callback, {String? groupId}) {
+    final filter = groupId != null 
+      ? PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'group_id', value: groupId)
+      : PostgresChangeFilter(type: PostgresChangeFilterType.eq, column: 'conversation_id', value: 'typing_signal');
+
     return _supabase
         .channel('typing_signals')
         .onPostgresChanges(
           event: PostgresChangeEvent.insert,
           schema: 'public',
           table: 'messages',
-          filter: PostgresChangeFilter(
-            type: PostgresChangeFilterType.eq,
-            column: 'conversation_id',
-            value: 'typing_signal',
-          ),
+          filter: filter,
           callback: (payload) => callback(payload.newRecord),
         )
         .subscribe();
@@ -614,6 +739,35 @@ class ApiService {
         .subscribe();
   }
 
+  static RealtimeChannel getTasksChannel(String username, Function() callback) {
+    return _supabase
+        .channel('public:tasks')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'tasks',
+          callback: (payload) => callback(),
+        )
+        .subscribe();
+  }
+
+  static RealtimeChannel getNotificationsChannel(String username, Function() callback) {
+    return _supabase
+        .channel('public:notifications:user_id=eq.$username')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.insert,
+          schema: 'public',
+          table: 'notifications',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'user_id',
+            value: username,
+          ),
+          callback: (payload) => callback(),
+        )
+        .subscribe();
+  }
+
   static Future<bool> loginWithGoogle(String idToken) async {
     try {
       final response = await _supabase.auth.signInWithIdToken(
@@ -630,6 +784,152 @@ class ApiService {
       return false;
     } catch (e) {
       return false;
+    }
+  }
+
+  // NOTIFICATIONS
+  static Future<void> createNotification({
+    required String userId,
+    required String type,
+    required String title,
+    String? body,
+    String? referenceId,
+  }) async {
+    try {
+      final senderId = await getUsername();
+      await _supabase.from('notifications').insert({
+        'user_id': userId,
+        'sender_id': senderId,
+        'type': type,
+        'title': title,
+        'body': body,
+        'reference_id': referenceId,
+        'is_read': false,
+      });
+    } catch (e) {
+      print('Create notification error: $e');
+    }
+  }
+
+  static Future<List<Map<String, dynamic>>> getNotifications() async {
+    try {
+      final myUser = await getUsername();
+      if (myUser == null) return [];
+      
+      final List<dynamic> data = await _supabase
+          .from('notifications')
+          .select()
+          .eq('user_id', myUser)
+          .order('created_at', ascending: false);
+      
+      return data.map((n) => Map<String, dynamic>.from(n)).toList();
+    } catch (e) {
+      return [];
+    }
+  }
+
+  static Future<void> markNotificationAsRead(String id) async {
+    try {
+      await _supabase.from('notifications').update({'is_read': true}).eq('id', id);
+    } catch (e) {
+      print('Mark notification read error: $e');
+    }
+  }
+
+  // GROUP MANAGEMENT ADVANCED
+  static Future<int> getGroupMemberCount(String groupId) async {
+    try {
+      final List<dynamic> res = await _supabase.from('group_members').select('user_id').eq('group_id', groupId);
+      return res.length;
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  static Future<List<Map<String, dynamic>>> getGroupMembers(String groupId) async {
+    try {
+      final List<dynamic> data = await _supabase
+          .from('group_members')
+          .select('*, profiles(*)')
+          .eq('group_id', groupId);
+      
+      return data.map((m) {
+        final profile = m['profiles'] as Map<String, dynamic>;
+        return {
+          'user_id': m['user_id'],
+          'role': m['role'],
+          'joined_at': m['joined_at'],
+          'username': profile['username'],
+          'profilePic': profile['avatar_url'],
+          'isOnline': profile['is_online'],
+        };
+      }).toList();
+    } catch (e) {
+      print('Get members error: $e');
+      return [];
+    }
+  }
+
+  static Future<bool> addGroupMember(String groupId, String username) async {
+    try {
+      await _supabase.from('group_members').insert({
+        'group_id': groupId,
+        'user_id': username,
+        'role': 'member'
+      });
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  static Future<bool> removeGroupMember(String groupId, String username) async {
+    try {
+      await _supabase.from('group_members').delete().match({
+        'group_id': groupId,
+        'user_id': username
+      });
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  static Future<bool> updateMemberRole(String groupId, String username, String role) async {
+    try {
+      await _supabase.from('group_members').update({'role': role}).match({
+        'group_id': groupId,
+        'user_id': username
+      });
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // CONTACTS FETCH
+  static Future<List<Map<String, dynamic>>> getMyContacts() async {
+    try {
+      final myUser = await getUsername();
+      if (myUser == null) return [];
+      
+      final List<dynamic> data = await _supabase
+          .from('contacts')
+          .select('contact_id, profiles!contacts_contact_id_fkey(*)')
+          .eq('user_id', myUser);
+      
+      return data.map((c) {
+        final profile = c['profiles'] as Map<String, dynamic>;
+        return {
+          'username': profile['username'],
+          'profilePic': profile['avatar_url'],
+          'isOnline': profile['is_online'],
+          'about': profile['about'],
+        };
+      }).toList();
+    } catch (e) {
+      print('Get contacts error: $e');
+      return [];
     }
   }
 
