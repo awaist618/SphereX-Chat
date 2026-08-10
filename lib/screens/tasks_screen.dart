@@ -41,7 +41,8 @@ class _TasksScreenState extends State<TasksScreen> {
 
   Future<void> _loadTasks() async {
     if (!mounted) return;
-    setState(() => _isLoading = true);
+    
+    // 1. Local Load
     final tasks = await ApiService.getTasks(_currentFilter);
     if (mounted) {
       setState(() {
@@ -49,6 +50,14 @@ class _TasksScreenState extends State<TasksScreen> {
         _isLoading = false;
       });
     }
+
+    // 2. Background Sync Refresh
+    Future.delayed(const Duration(seconds: 1), () async {
+      if (mounted) {
+        final syncedTasks = await ApiService.getTasks(_currentFilter);
+        setState(() => _tasks = syncedTasks);
+      }
+    });
   }
 
   @override

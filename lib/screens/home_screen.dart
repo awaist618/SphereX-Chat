@@ -3,11 +3,14 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
 import '../services/api_service.dart';
 import 'chat_screen.dart';
+import 'call_screen.dart';
+import '../features/calls/models/call_model.dart' as model;
 import 'contacts_screen.dart';
 import 'profile_screen.dart';
 import 'tasks_screen.dart';
 import 'groups_screen.dart';
 import 'notifications_screen.dart';
+import 'calls_history_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -19,6 +22,7 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   int _selectedIndex = 0;
   String? _myUsername;
+  RealtimeChannel? _globalSignalingChannel;
 
   final List<Widget> _tabs = [
     const HomeScreenContent(),
@@ -38,7 +42,29 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _myUsername = await ApiService.getUsername();
     if (_myUsername != null) {
       ApiService.updateOnlineStatus(_myUsername!, true);
+      _listenForCalls();
     }
+  }
+
+  void _listenForCalls() {
+    if (_myUsername == null) return;
+    _globalSignalingChannel = ApiService.getGlobalSignalingChannel(_myUsername!, (signal) {
+      if (mounted) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => CallScreen(
+              otherUsername: signal['caller_id'],
+              type: signal['call_type'] == 'video' ? model.CallType.video : model.CallType.voice,
+              isIncoming: true,
+              callId: signal['call_id'],
+              sdp: signal['sdp'],
+              sdpType: signal['sdp_type'],
+            ),
+          ),
+        );
+      }
+    });
   }
 
   @override
@@ -53,6 +79,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    if (_globalSignalingChannel != null) {
+      Supabase.instance.client.removeChannel(_globalSignalingChannel!);
+    }
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -130,6 +159,7 @@ class _HomeScreenContentState extends State<HomeScreenContent> {
 
   Future<void> _loadConversations() async {
     if (_myUsername != null) {
+      // 1. Initial Local Load
       final convs = await ApiService.getConversations(_myUsername!);
       if (mounted) {
         setState(() {
@@ -137,6 +167,14 @@ class _HomeScreenContentState extends State<HomeScreenContent> {
           _isLoading = false;
         });
       }
+
+      // 2. Refresh after background sync
+      Future.delayed(const Duration(seconds: 2), () async {
+        if (mounted) {
+          final syncedConvs = await ApiService.getConversations(_myUsername!);
+          setState(() => _conversations = syncedConvs);
+        }
+      });
     }
   }
 
@@ -246,7 +284,7 @@ class _HomeScreenContentState extends State<HomeScreenContent> {
       {'name': 'Chats', 'icon': Icons.chat_bubble, 'screen': null},
       {'name': 'Groups', 'icon': Icons.groups, 'screen': const GroupsScreen()},
       {'name': 'Tasks', 'icon': Icons.assignment, 'screen': const TasksScreen()},
-      {'name': 'Calls', 'icon': Icons.call, 'screen': null},
+      {'name': 'Calls', 'icon': Icons.call, 'screen': const CallsHistoryScreen()},
     ];
 
     return Padding(

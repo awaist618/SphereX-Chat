@@ -13,6 +13,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:uuid/uuid.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:file_picker/file_picker.dart';
+import '../features/calls/models/call_model.dart' as model;
 import '../services/api_service.dart';
 import 'call_screen.dart';
 import 'contact_profile_screen.dart';
@@ -278,8 +279,23 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _fetchMessages() async {
     if (_myUsername == null) return;
-    final messages = await ApiService.getMessages(_myUsername!, widget.username, groupId: widget.groupId);
     
+    // 1. Initial Load (Fast)
+    final messages = await ApiService.getMessages(_myUsername!, widget.username, groupId: widget.groupId);
+    await _displayMessages(messages);
+
+    // 2. The sync happened in background inside ApiService.getMessages.
+    // We can fetch again after a short delay or rely on Realtime.
+    // For a professional feel, we'll do one more fetch to ensure consistency.
+    Future.delayed(const Duration(seconds: 1), () async {
+      if (mounted) {
+        final syncedMessages = await ApiService.getMessages(_myUsername!, widget.username, groupId: widget.groupId);
+        await _displayMessages(syncedMessages);
+      }
+    });
+  }
+
+  Future<void> _displayMessages(List<Map<String, dynamic>> messages) async {
     List<Map<String, dynamic>> enrichedMessages = [];
     for (var m in messages) {
       final reactions = await ApiService.getReactions(m['id']);
@@ -875,7 +891,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 builder: (context) => CallScreen(
                   otherUsername: widget.username,
                   otherProfilePic: _otherUserProfilePic,
-                  type: CallType.voice,
+                  type: model.CallType.voice,
                 )
               )),
             ),
@@ -885,7 +901,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 builder: (context) => CallScreen(
                   otherUsername: widget.username,
                   otherProfilePic: _otherUserProfilePic,
-                  type: CallType.video,
+                  type: model.CallType.video,
                 )
               )),
             ),

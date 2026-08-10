@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'local_db_service.dart';
 
 class ApiService {
   static final _storage = FlutterSecureStorage();
@@ -227,7 +228,7 @@ class ApiService {
           .order('created_at', ascending: false)
           .limit(10);
       
-      List<Map<String, dynamic>> messages = msgData.map((m) => Map<String, dynamic>.from(m)).toList();
+      List<Map<String, dynamic>> messages = List<Map<String, dynamic>>.from(msgData.map((m) => Map<String, dynamic>.from(m)));
 
       return {
         'users': users,
@@ -288,7 +289,7 @@ class ApiService {
           .eq('receiver_id', myUser)
           .eq('status', 'pending');
       
-      return data.map((r) => {'sender': r['sender_id']}).toList();
+      return List<Map<String, dynamic>>.from(data.map((r) => {'sender': r['sender_id']}));
     } catch (e) {
       return [];
     }
@@ -354,6 +355,15 @@ class ApiService {
 
       final response = await _supabase.from('messages').insert(messageData).select().single();
       
+      // Save locally immediately
+      await LocalDbService.saveItems('messages', [
+        {
+          ...response,
+          'is_read': response['is_read'] ? 1 : 0,
+          'is_edited': response['is_edited'] ? 1 : 0,
+        }
+      ]);
+
       // Trigger notification
       if (groupId == null) {
         await createNotification(
@@ -363,9 +373,6 @@ class ApiService {
           body: text.isNotEmpty ? text : (type == 'image' ? 'Sent a photo' : 'Sent a file'),
           referenceId: response['id'].toString(),
         );
-      } else {
-        // For groups, ideally notify all members except sender. 
-        // For now, let's keep it simple or implement a cloud function later.
       }
 
       return true;
@@ -436,6 +443,19 @@ class ApiService {
   }
 
   static Future<List<Map<String, dynamic>>> getMessages(String user1, String user2, {String? groupId}) async {
+    final convId = groupId == null ? getConversationId(user1, user2) : null;
+    
+    // 1. Get from Local DB for fast load
+    final localMessages = await LocalDbService.getMessages(convId, groupId);
+    
+    // 2. Fetch from Network in background
+    _syncMessages(user1, user2, groupId: groupId);
+
+    if (localMessages.isNotEmpty) {
+      return List<Map<String, dynamic>>.from(localMessages.map((m) => _mapLocalMessage(m, user1)));
+    }
+
+    // If local is empty, wait for network (first time load)
     try {
       if (groupId != null) {
         final List<dynamic> data = await _supabase
@@ -444,20 +464,73 @@ class ApiService {
             .eq('group_id', groupId)
             .order('created_at', ascending: true);
         
-        return data.map((m) => _mapMessage(m, user1)).toList();
+        await _saveMessagesLocally(data);
+        return List<Map<String, dynamic>>.from(data.map((m) => _mapMessage(m, user1)));
       } else {
-        final convId = getConversationId(user1, user2);
         final List<dynamic> data = await _supabase
             .from('messages')
             .select()
-            .eq('conversation_id', convId)
+            .eq('conversation_id', convId!)
             .order('created_at', ascending: true);
             
-        return data.map((m) => _mapMessage(m, user1)).toList();
+        await _saveMessagesLocally(data);
+        return List<Map<String, dynamic>>.from(data.map((m) => _mapMessage(m, user1)));
       }
     } catch (e) {
       return [];
     }
+  }
+
+  static Future<void> _syncMessages(String user1, String user2, {String? groupId}) async {
+    try {
+      final convId = groupId == null ? getConversationId(user1, user2) : null;
+      List<dynamic> data;
+      if (groupId != null) {
+        data = await _supabase.from('messages').select().eq('group_id', groupId).order('created_at', ascending: true);
+      } else {
+        data = await _supabase.from('messages').select().eq('conversation_id', convId!).order('created_at', ascending: true);
+      }
+      await _saveMessagesLocally(data);
+    } catch (e) {
+      print('Sync messages error: $e');
+    }
+  }
+
+  static Future<void> _saveMessagesLocally(List<dynamic> messages) async {
+    final localData = messages.map((m) => {
+      'id': m['id'],
+      'conversation_id': m['conversation_id'],
+      'group_id': m['group_id'],
+      'sender_id': m['sender_id'],
+      'receiver_id': m['receiver_id'],
+      'content': m['content'],
+      'type': m['type'],
+      'file_url': m['file_url'],
+      'file_name': m['file_name'],
+      'file_size': m['file_size'],
+      'reply_to': m['reply_to'],
+      'is_read': m['is_read'] == true ? 1 : 0,
+      'is_edited': m['is_edited'] == true ? 1 : 0,
+      'created_at': m['created_at'],
+    }).toList();
+    await LocalDbService.saveItems('messages', localData);
+  }
+
+  static Map<String, dynamic> _mapLocalMessage(Map<String, dynamic> m, String myUser) {
+    return {
+      'id': m['id'],
+      'sender': m['sender_id'],
+      'text': m['content'],
+      'mediaUrl': m['file_url'],
+      'fileName': m['file_name'],
+      'fileSize': m['file_size'],
+      'type': m['type'],
+      'timestamp': m['created_at'],
+      'reply_to': m['reply_to'],
+      'is_read': m['is_read'] == 1,
+      'is_edited': m['is_edited'] == 1,
+      'isMe': m['sender_id'] == myUser,
+    };
   }
 
   static Map<String, dynamic> _mapMessage(Map<String, dynamic> m, String myUser) {
@@ -478,6 +551,23 @@ class ApiService {
   }
 
   static Future<List<Map<String, dynamic>>> getConversations(String username) async {
+    // 1. Get from Local
+    final localConvs = await LocalDbService.getConversations();
+    
+    // 2. background sync
+    _syncConversations(username);
+
+    if (localConvs.isNotEmpty) {
+      return localConvs.map((c) => {
+        '_id': c['other_user'],
+        'lastMessage': c['last_message'],
+        'timestamp': c['updated_at'],
+        'profilePic': c['profile_pic'],
+        'isOnline': c['is_online'] == 1,
+        'unreadCount': c['unread_count']
+      }).toList();
+    }
+
     try {
       final List<dynamic> data = await _supabase
           .from('conversations')
@@ -508,10 +598,58 @@ class ApiService {
           'unreadCount': unreadCount
         });
       }
+
+      await _saveConversationsLocally(results);
       return results;
     } catch (e) {
       return [];
     }
+  }
+
+  static Future<void> _syncConversations(String username) async {
+    try {
+      final List<dynamic> data = await _supabase
+          .from('conversations')
+          .select()
+          .contains('participants', [username])
+          .order('updated_at', ascending: false);
+      
+      List<Map<String, dynamic>> results = [];
+      for (var conv in data) {
+        final otherUser = (conv['participants'] as List).firstWhere((p) => p != username);
+        final profile = await getProfile(otherUser);
+        final List<dynamic> unreadCountRes = await _supabase
+            .from('messages')
+            .select('id')
+            .eq('conversation_id', conv['id'])
+            .eq('receiver_id', username)
+            .eq('is_read', false);
+        results.add({
+          '_id': otherUser,
+          'lastMessage': conv['last_message'],
+          'timestamp': conv['updated_at'],
+          'profilePic': profile?['profilePic'],
+          'isOnline': profile?['isOnline'],
+          'unreadCount': unreadCountRes.length
+        });
+      }
+      await _saveConversationsLocally(results);
+    } catch (e) {
+      print('Sync conversations error: $e');
+    }
+  }
+
+  static Future<void> _saveConversationsLocally(List<Map<String, dynamic>> convs) async {
+    final localData = convs.map((c) => {
+      'id': c['_id'], // Using other_user as ID for simplicity
+      'last_message': c['lastMessage'],
+      'updated_at': c['timestamp'],
+      'other_user': c['_id'],
+      'profile_pic': c['profilePic'],
+      'is_online': c['isOnline'] == true ? 1 : 0,
+      'unread_count': c['unreadCount']
+    }).toList();
+    await LocalDbService.saveItems('conversations', localData);
   }
 
   // GROUP MANAGEMENT
@@ -606,8 +744,17 @@ class ApiService {
       final myUser = await getUsername();
       if (myUser == null) return [];
 
-      var query = _supabase.from('tasks').select();
+      // 1. Get from Local
+      final localTasks = await LocalDbService.getTasks(filter, myUser);
+      
+      // 2. background sync
+      _syncTasks(filter, myUser);
 
+      if (localTasks.isNotEmpty) {
+        return localTasks;
+      }
+
+      var query = _supabase.from('tasks').select();
       if (filter == 'assigned_to_me') {
         query = query.eq('assigned_to', myUser);
       } else if (filter == 'created_by_me') {
@@ -617,10 +764,33 @@ class ApiService {
       }
 
       final List<dynamic> data = await query.order('created_at', ascending: false);
-      return data.map((t) => Map<String, dynamic>.from(t)).toList();
+      await _saveTasksLocally(data);
+      return List<Map<String, dynamic>>.from(data.map((t) => Map<String, dynamic>.from(t)));
     } catch (e) {
       return [];
     }
+  }
+
+  static Future<void> _syncTasks(String filter, String myUser) async {
+    try {
+      var query = _supabase.from('tasks').select();
+      if (filter == 'assigned_to_me') {
+        query = query.eq('assigned_to', myUser);
+      } else if (filter == 'created_by_me') {
+        query = query.eq('created_by', myUser);
+      } else if (filter == 'done') {
+        query = query.eq('status', 'completed');
+      }
+      final List<dynamic> data = await query.order('created_at', ascending: false);
+      await _saveTasksLocally(data);
+    } catch (e) {
+      print('Sync tasks error: $e');
+    }
+  }
+
+  static Future<void> _saveTasksLocally(List<dynamic> tasks) async {
+    final localData = tasks.map((t) => Map<String, dynamic>.from(t)).toList();
+    await LocalDbService.saveItems('tasks', localData);
   }
 
   static Future<bool> updateTaskStatus(String taskId, String status) async {
@@ -633,6 +803,20 @@ class ApiService {
     } catch (e) {
       return false;
     }
+  }
+
+  static RealtimeChannel getGlobalSignalingChannel(String username, Function(Map<String, dynamic>) callback) {
+    return _supabase
+        .channel('signaling:$username')
+        .onBroadcast(
+          event: 'signal',
+          callback: (payload) {
+            if (payload['type'] == 'call_invite' && payload['receiver_id'] == username) {
+              callback(payload);
+            }
+          },
+        )
+        .subscribe();
   }
 
   static Future<Map<String, dynamic>?> getTaskContext(Map<String, dynamic> task) async {
@@ -658,6 +842,68 @@ class ApiService {
     }
   }
 
+  // CALL MANAGEMENT
+  static Future<String?> createCallRecord({
+    required String callerId,
+    required String receiverId,
+    required String type,
+  }) async {
+    try {
+      final res = await _supabase.from('calls').insert({
+        'caller_id': callerId,
+        'receiver_id': receiverId,
+        'type': type,
+        'status': 'calling',
+      }).select().single();
+      return res['id'].toString();
+    } catch (e) {
+      print('Create call record error: $e');
+      return null;
+    }
+  }
+
+  static Future<void> updateCallStatus(String callId, String status) async {
+    try {
+      final Map<String, dynamic> data = {'status': status};
+      if (status == 'connected') {
+        data['answered_at'] = DateTime.now().toIso8601String();
+      } else if (status == 'ended' || status == 'rejected' || status == 'cancelled') {
+        data['ended_at'] = DateTime.now().toIso8601String();
+      }
+      await _supabase.from('calls').update(data).eq('id', callId);
+    } catch (e) {
+      print('Update call status error: $e');
+    }
+  }
+
+  static Future<List<Map<String, dynamic>>> getCallHistory() async {
+    try {
+      final myUser = await getUsername();
+      if (myUser == null) return [];
+      
+      final List<dynamic> data = await _supabase
+          .from('calls')
+          .select('*, caller:profiles!calls_caller_id_fkey(*), receiver:profiles!calls_receiver_id_fkey(*)')
+          .or('caller_id.eq.$myUser,receiver_id.eq.$myUser')
+          .order('created_at', ascending: false);
+      
+      final List<Map<String, dynamic>> results = List<Map<String, dynamic>>.from(data.map((call) {
+        final bool isOutgoing = call['caller_id'] == myUser;
+        final profile = isOutgoing ? call['receiver'] : call['caller'];
+        return {
+          ...call,
+          'isOutgoing': isOutgoing,
+          'otherUser': profile['username'],
+          'profilePic': profile['avatar_url'],
+        };
+      }));
+      return results;
+    } catch (e) {
+      print('Get call history error: $e');
+      return [];
+    }
+  }
+
   // REAL-TIME HELPERS
   static RealtimeChannel getMessageChannel(String user1, String user2, Function(Map<String, dynamic>) callback, {String? groupId}) {
     if (groupId != null) {
@@ -672,7 +918,11 @@ class ApiService {
               column: 'group_id',
               value: groupId,
             ),
-            callback: (payload) => callback(payload.newRecord),
+            callback: (payload) {
+            final record = payload.newRecord;
+            _saveMessagesLocally([record]);
+            callback(record);
+          },
           )
           .subscribe();
     }
@@ -689,7 +939,11 @@ class ApiService {
             column: 'conversation_id',
             value: convId,
           ),
-          callback: (payload) => callback(payload.newRecord),
+          callback: (payload) {
+            final record = payload.newRecord;
+            _saveMessagesLocally([record]);
+            callback(record);
+          },
         )
         .subscribe();
   }
@@ -717,7 +971,11 @@ class ApiService {
           schema: 'public',
           table: 'messages',
           filter: filter,
-          callback: (payload) => callback(payload.newRecord),
+          callback: (payload) {
+            final record = payload.newRecord;
+            _saveMessagesLocally([record]);
+            callback(record);
+          },
         )
         .subscribe();
   }
@@ -734,7 +992,11 @@ class ApiService {
             column: 'username',
             value: username,
           ),
-          callback: (payload) => callback(payload.newRecord),
+          callback: (payload) {
+            final record = payload.newRecord;
+            _saveMessagesLocally([record]);
+            callback(record);
+          },
         )
         .subscribe();
   }
@@ -822,7 +1084,7 @@ class ApiService {
           .eq('user_id', myUser)
           .order('created_at', ascending: false);
       
-      return data.map((n) => Map<String, dynamic>.from(n)).toList();
+      return List<Map<String, dynamic>>.from(data.map((n) => Map<String, dynamic>.from(n)));
     } catch (e) {
       return [];
     }
@@ -853,7 +1115,7 @@ class ApiService {
           .select('*, profiles(*)')
           .eq('group_id', groupId);
       
-      return data.map((m) {
+      return List<Map<String, dynamic>>.from(data.map((m) {
         final profile = m['profiles'] as Map<String, dynamic>;
         return {
           'user_id': m['user_id'],
@@ -863,7 +1125,7 @@ class ApiService {
           'profilePic': profile['avatar_url'],
           'isOnline': profile['is_online'],
         };
-      }).toList();
+      }));
     } catch (e) {
       print('Get members error: $e');
       return [];
@@ -918,7 +1180,7 @@ class ApiService {
           .select('contact_id, profiles!contacts_contact_id_fkey(*)')
           .eq('user_id', myUser);
       
-      return data.map((c) {
+      return List<Map<String, dynamic>>.from(data.map((c) {
         final profile = c['profiles'] as Map<String, dynamic>;
         return {
           'username': profile['username'],
@@ -926,7 +1188,7 @@ class ApiService {
           'isOnline': profile['is_online'],
           'about': profile['about'],
         };
-      }).toList();
+      }));
     } catch (e) {
       print('Get contacts error: $e');
       return [];

@@ -8,6 +8,8 @@ list(APPEND FLUTTER_PLUGIN_LIST
   emoji_picker_flutter
   file_selector_windows
   flutter_secure_storage_windows
+  flutter_webrtc
+  permission_handler_windows
   record_windows
   url_launcher_windows
 )
