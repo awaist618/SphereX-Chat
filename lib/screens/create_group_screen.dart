@@ -70,8 +70,14 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
       final myUser = await ApiService.getUsername();
       if (myUser == null) return;
 
-      final List<String> members = [myUser, ..._selectedMembers];
-      final groupId = await ApiService.createGroup(_nameController.text.trim(), _descController.text.trim(), members);
+      // Use a Set to avoid duplicate member entries (e.g., if current user is in contacts)
+      final Set<String> membersSet = {myUser, ..._selectedMembers};
+      
+      final groupId = await ApiService.createGroup(
+        _nameController.text.trim(), 
+        _descController.text.trim(), 
+        membersSet.toList()
+      );
 
       if (groupId != null) {
         if (_groupImageBytes != null && _imageName != null) {

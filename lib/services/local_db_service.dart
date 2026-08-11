@@ -14,7 +14,7 @@ class LocalDbService {
     String path = join(await getDatabasesPath(), 'spherex_local.db');
     return await openDatabase(
       path,
-      version: 7, // Bumped to 7
+      version: 9, // Bumped to 9
       onCreate: (db, version) async {
         await _createTables(db);
       },
@@ -33,6 +33,11 @@ class LocalDbService {
         if (oldVersion < 7) {
           try {
             await db.execute('ALTER TABLE messages ADD COLUMN is_deleted INTEGER DEFAULT 0');
+          } catch (e) {}
+        }
+        if (oldVersion < 8 || oldVersion < 9) {
+          try {
+            await db.execute('ALTER TABLE user_profiles ADD COLUMN name TEXT');
           } catch (e) {}
         }
         await _createTables(db);
@@ -102,6 +107,7 @@ class LocalDbService {
     await db.execute('''
       CREATE TABLE IF NOT EXISTS user_profiles(
         username TEXT PRIMARY KEY,
+        name TEXT,
         about TEXT,
         phone TEXT,
         profile_pic TEXT,
@@ -195,6 +201,7 @@ class LocalDbService {
       final db = await database;
       await db.insert('user_profiles', {
         'username': profile['username'],
+        'name': profile['name'],
         'about': profile['about'],
         'phone': profile['phone'],
         'profile_pic': profile['profilePic'],
@@ -214,6 +221,7 @@ class LocalDbService {
       final p = res.first;
       return {
         'username': p['username'],
+        'name': p['name'],
         'about': p['about'],
         'phone': p['phone'],
         'profilePic': p['profile_pic'],

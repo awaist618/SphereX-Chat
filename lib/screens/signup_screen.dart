@@ -15,6 +15,7 @@ class _SignupScreenState extends State<SignupScreen> {
   final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
   final _usernameController = TextEditingController();
+  final _phoneController = TextEditingController();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
@@ -25,6 +26,7 @@ class _SignupScreenState extends State<SignupScreen> {
   void dispose() {
     _nameController.dispose();
     _usernameController.dispose();
+    _phoneController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
@@ -83,13 +85,51 @@ class _SignupScreenState extends State<SignupScreen> {
                     TextFormField(
                       controller: _usernameController,
                       style: const TextStyle(color: Colors.white),
-                      decoration: _buildInputDecoration("Username (e.g. Awais)", Icons.alternate_email),
+                      decoration: _buildInputDecoration("Username (e.g. awais)", Icons.alternate_email),
+                      onChanged: (value) {
+                        // Automatically convert to lowercase as they type
+                        if (value != value.toLowerCase()) {
+                          _usernameController.value = _usernameController.value.copyWith(
+                            text: value.toLowerCase(),
+                            selection: TextSelection.fromPosition(
+                              TextPosition(offset: _usernameController.selection.baseOffset),
+                            ),
+                          );
+                        }
+                      },
                       validator: (value) {
                         if (value == null || value.isEmpty) {
                           return 'Please enter a username';
                         }
                         if (value.length < 3) {
                           return 'Username too short';
+                        }
+                        if (RegExp(r'[A-Z]').hasMatch(value)) {
+                          return 'Usernames must be lowercase only';
+                        }
+                        if (!RegExp(r'^[a-z0-9_.]+$').hasMatch(value)) {
+                          return 'Use lowercase, numbers, underscores, or dots';
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 20),
+
+                    // Phone Number Field
+                    TextFormField(
+                      controller: _phoneController,
+                      keyboardType: TextInputType.phone,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: _buildInputDecoration("Phone Number (11 digits)", Icons.phone_android_outlined),
+                      validator: (value) {
+                        if (value == null || value.isEmpty) {
+                          return 'Please enter your phone number';
+                        }
+                        if (value.length != 11) {
+                          return 'Phone number must be exactly 11 digits';
+                        }
+                        if (!RegExp(r'^[0-9]+$').hasMatch(value)) {
+                          return 'Digits only';
                         }
                         return null;
                       },
@@ -225,42 +265,46 @@ class _SignupScreenState extends State<SignupScreen> {
     if (_formKey.currentState!.validate()) {
       setState(() => _isLoading = true);
       
+      final String email = _emailController.text.trim();
+      final String username = _usernameController.text.trim().toLowerCase();
+      final String password = _passwordController.text;
+      final String phone = _phoneController.text.trim();
+      final String name = _nameController.text.trim();
+
       final result = await ApiService.requestOtp(
-        _emailController.text, 
-        _usernameController.text,
-        _passwordController.text
+        email, 
+        username,
+        password,
+        phone: phone,
+        name: name,
       );
       
+      if (!mounted) return;
       setState(() => _isLoading = false);
 
       if (result['success']) {
-        if (!mounted) return;
-        
         if (result['needsVerification']) {
-          // Normal flow: Email confirmation is ON
           Navigator.of(context).push(
             MaterialPageRoute(
               builder: (context) => OtpVerificationScreen(
-                email: _emailController.text,
-                username: _usernameController.text,
-                password: _passwordController.text,
+                email: email,
+                username: username,
+                password: password,
               ),
             ),
           );
         } else {
-          // "Instant" flow: Email confirmation is OFF
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Account created successfully!')),
           );
           Navigator.of(context).pushAndRemoveUntil(
-            MaterialPageRoute(builder: (context) => HomeScreen()),
+            MaterialPageRoute(builder: (context) => const HomeScreen()),
             (route) => false,
           );
         }
       } else {
-        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(result['error'] ?? 'Signup failed')),
+          SnackBar(content: Text(result['error'] ?? 'Signup failed'), backgroundColor: const Color(0xFFFF4C61)),
         );
       }
     }

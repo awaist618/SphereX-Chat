@@ -14,11 +14,14 @@
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
 
     <application
-        android:label="spherex_chat"
+        android:label="SphereX"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:enableOnBackInvokedCallback="true">
         <activity
             android:name=".MainActivity"
+            android:label="SphereX"
             android:exported="true"
             android:launchMode="singleTop"
             android:taskAffinity=""

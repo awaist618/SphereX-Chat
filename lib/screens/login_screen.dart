@@ -71,6 +71,16 @@ class _LoginScreenState extends State<LoginScreen> {
                         keyboardType: TextInputType.emailAddress,
                         style: const TextStyle(color: Colors.white),
                         decoration: _buildInputDecoration("Email Address", Icons.email_outlined),
+                        onChanged: (value) {
+                          if (value != value.toLowerCase()) {
+                            _emailController.value = _emailController.value.copyWith(
+                              text: value.toLowerCase(),
+                              selection: TextSelection.fromPosition(
+                                TextPosition(offset: _emailController.selection.baseOffset),
+                              ),
+                            );
+                          }
+                        },
                         validator: (value) {
                           if (value == null || value.isEmpty || !value.contains('@')) {
                             return 'Please enter a valid email';
@@ -141,21 +151,6 @@ class _LoginScreenState extends State<LoginScreen> {
                       
                       const SizedBox(height: 20),
 
-                      // Google Login Button
-                      OutlinedButton.icon(
-                        onPressed: _isLoading ? null : _handleGoogleLogin,
-                        icon: const Icon(Icons.login, color: Colors.white), 
-                        label: const Text("Continue with Google", style: TextStyle(color: Colors.white)),
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          side: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                      ),
-                      
-                      const SizedBox(height: 20),
                       TextButton(
                         onPressed: () {
                           Navigator.of(context).push(
@@ -243,7 +238,7 @@ class _LoginScreenState extends State<LoginScreen> {
         );
       }
     } catch (error) {
-      print('Google Login Error: $error');
+      debugPrint('Google Login Error: $error');
       setState(() => _isLoading = false);
     }
   }

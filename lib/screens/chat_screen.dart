@@ -980,15 +980,17 @@ class _ChatScreenState extends State<ChatScreen> {
           child: Column(
             children: [
               Expanded(
-                child: ListView.builder(
-                  controller: _scrollController,
-                  padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 20),
-                  itemCount: (_isSearching ? _filteredMessages : _messages).length,
-                  itemBuilder: (context, index) {
-                    final msg = _isSearching ? _filteredMessages[index] : _messages[index];
-                    return _buildMessageBubble(msg);
-                  },
-                ),
+                child: (_messages.isEmpty && !_isSearching) 
+                  ? _buildEmptyChatState()
+                  : ListView.builder(
+                      controller: _scrollController,
+                      padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 20),
+                      itemCount: (_isSearching ? _filteredMessages : _messages).length,
+                      itemBuilder: (context, index) {
+                        final msg = _isSearching ? _filteredMessages[index] : _messages[index];
+                        return _buildMessageBubble(msg);
+                      },
+                    ),
               ),
               if (_replyingTo != null) _buildReplyPreview(),
               if (!_isSelectionMode) 
@@ -999,6 +1001,34 @@ class _ChatScreenState extends State<ChatScreen> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildEmptyChatState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(30),
+            decoration: BoxDecoration(
+              color: const Color(0xFF16233A),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(Icons.chat_bubble_outline_rounded, size: 50, color: Colors.white.withValues(alpha: 0.1)),
+          ),
+          const SizedBox(height: 20),
+          Text(
+            "No messages yet", 
+            style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 16, fontWeight: FontWeight.bold)
+          ),
+          const SizedBox(height: 8),
+          Text(
+            "Send a message to start the conversation!", 
+            style: TextStyle(color: Colors.white.withValues(alpha: 0.2), fontSize: 13)
+          ),
+        ],
       ),
     );
   }

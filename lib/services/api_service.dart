@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'local_db_service.dart';
@@ -33,28 +34,59 @@ class ApiService {
         'last_seen': DateTime.now().toIso8601String(),
       }).eq('username', username);
     } catch (e) {
-      print('Update status error: $e');
+      debugPrint('Update status error: $e');
     }
   }
 
-  static Future<Map<String, dynamic>> requestOtp(String email, String username, String password) async {
+  static Future<Map<String, dynamic>> requestOtp(String email, String username, String password, {String? phone, String? name}) async {
     try {
+      final usernameLower = username.trim().toLowerCase();
+
+      // Check if username already exists in profiles
+      final existingUser = await _supabase
+          .from('profiles')
+          .select('username')
+          .eq('username', usernameLower)
+          .maybeSingle();
+      
+      if (existingUser != null) {
+        return {'success': false, 'error': 'Username already taken'};
+      }
+
+      // Check if phone number already exists
+      if (phone != null && phone.isNotEmpty) {
+        final existingPhone = await _supabase
+            .from('profiles')
+            .select('username')
+            .eq('phone', phone)
+            .maybeSingle();
+        
+        if (existingPhone != null) {
+          return {'success': false, 'error': 'This phone number is already registered'};
+        }
+      }
+
       final response = await _supabase.auth.signUp(
         email: email,
         password: password,
-        data: {'username': username},
+        data: {'username': usernameLower, 'phone': phone, 'full_name': name},
       );
       
       if (response.user != null) {
         await LocalDbService.clearAll();
-        await _saveUsername(username);
-        await _ensureProfileExists(response.user!.id, username, email);
+        await _saveUsername(usernameLower);
+        // We try to create the profile. If RLS fails, handle it gracefully.
+        try {
+          await _ensureProfileExists(response.user!.id, usernameLower, email, phone: phone, name: name);
+        } catch (e) {
+          debugPrint('Background profile creation failed (normal if RLS is strict before verification): $e');
+        }
       }
 
       return {
         'success': true,
         'needsVerification': response.session == null,
-        'username': username
+        'username': usernameLower
       };
     } on AuthException catch (e) {
       return {'success': false, 'error': e.message};
@@ -63,18 +95,20 @@ class ApiService {
     }
   }
 
-  static Future<void> _ensureProfileExists(String userId, String username, String email) async {
+  static Future<void> _ensureProfileExists(String userId, String username, String email, {String? phone, String? name}) async {
     try {
       await _supabase.from('profiles').upsert({
         'id': userId,
         'username': username,
         'email': email,
+        'phone': phone,
+        'name': name,
         'about': "Available",
         'is_online': true,
         'last_seen': DateTime.now().toIso8601String(),
       });
     } catch (e) {
-      print('Profile Upsert Error: $e');
+      debugPrint('Profile Upsert Error: $e');
     }
   }
 
@@ -88,9 +122,13 @@ class ApiService {
       
       if (response.user != null) {
         await LocalDbService.clearAll();
-        final username = response.user!.userMetadata?['username'] ?? email.split('@')[0];
+        final meta = response.user!.userMetadata ?? {};
+        final username = meta['username'] ?? email.split('@')[0];
+        final phone = meta['phone'];
+        final name = meta['full_name'];
+
         await _saveUsername(username);
-        await _ensureProfileExists(response.user!.id, username, email);
+        await _ensureProfileExists(response.user!.id, username, email, phone: phone, name: name);
         return true;
       }
       return false;
@@ -107,12 +145,14 @@ class ApiService {
       );
       
       if (response.user != null) {
-        // Clear local data for the new session
         await LocalDbService.clearAll();
-        
-        final username = response.user!.userMetadata?['username'] ?? email.split('@')[0];
+        final meta = response.user!.userMetadata ?? {};
+        final username = meta['username'] ?? email.split('@')[0];
+        final phone = meta['phone'];
+        final name = meta['full_name'];
+
         await _saveUsername(username);
-        await _ensureProfileExists(response.user!.id, username, email);
+        await _ensureProfileExists(response.user!.id, username, email, phone: phone, name: name);
         return true;
       }
       return false;
@@ -145,6 +185,7 @@ class ApiService {
       if (data == null) return null;
       final profile = {
         'username': data['username'],
+        'name': data['name'],
         'about': data['about'],
         'phone': data['phone'],
         'profilePic': data['avatar_url'],
@@ -164,6 +205,7 @@ class ApiService {
       if (data != null) {
         await LocalDbService.saveProfile({
           'username': data['username'],
+          'name': data['name'],
           'about': data['about'],
           'phone': data['phone'],
           'profilePic': data['avatar_url'],
@@ -172,18 +214,42 @@ class ApiService {
         });
       }
     } catch (e) {
-      print('Sync profile error: $e');
+      debugPrint('Sync profile error: $e');
     }
   }
 
-  static Future<bool> updateProfile(String username, String about, String phone) async {
+  static Future<bool> updateProfile(String username, String? about, String? phone, {String? name}) async {
     try {
-      await _supabase.from('profiles').update({
-        'about': about,
-        'phone': phone
-      }).eq('username', username);
+      final user = _supabase.auth.currentUser;
+      if (user == null) return false;
+
+      final Map<String, dynamic> updates = {};
+      if (about != null && about != "Available") updates['about'] = about;
+      
+      if (phone != null && phone != "Not linked" && phone.isNotEmpty) {
+        if (phone.length == 11 && RegExp(r'^[0-9]+$').hasMatch(phone)) {
+          updates['phone'] = phone;
+        } else {
+          debugPrint('Skipping phone update: Invalid format ($phone)');
+        }
+      }
+      
+      if (name != null && name != "User" && name.isNotEmpty) updates['name'] = name;
+
+      if (updates.isEmpty) return true;
+
+      // Update by ID (the most secure and reliable way in Supabase)
+      await _supabase.from('profiles').update(updates).eq('id', user.id);
+      
+      // Sync local cache
+      final syncedProfile = await getProfile(username);
+      if (syncedProfile != null) {
+        await LocalDbService.saveProfile(syncedProfile);
+      }
+      
       return true;
     } catch (e) {
+      debugPrint('Update profile error: $e');
       return false;
     }
   }
@@ -199,23 +265,29 @@ class ApiService {
 
   static Future<bool> updateUsername(String oldUsername, String newUsername) async {
     try {
-      final newUsernameLower = newUsername.toLowerCase();
+      final newUsernameLower = newUsername.trim().toLowerCase();
+      
       // 1. Update Profile in Supabase
-      // Assuming 'profiles' table has 'username' as a unique field and 'id' as PK
-      // This will work if foreign keys are set to ON UPDATE CASCADE
+      // This will trigger CASCADE updates in all other tables if SQL from Step 1 was run
       await _supabase.from('profiles').update({
         'username': newUsernameLower
       }).eq('username', oldUsername);
 
-      // 2. Update Local Storage
+      // 2. Update Supabase Auth Metadata (Ensures future logins have the right name)
+      await _supabase.auth.updateUser(
+        UserAttributes(data: {'username': newUsernameLower})
+      );
+
+      // 3. Update Local Storage for the current session
       await _saveUsername(newUsernameLower);
 
-      // 3. Clear Local DB to force resync with new username
+      // 4. Clear Local DB and Sign Out to force a fresh session
+      // This is the "Professional" way: force a re-login with the new identity
       await LocalDbService.clearAll();
 
       return true;
     } catch (e) {
-      print('Update username error: $e');
+      debugPrint('Update username error: $e');
       return false;
     }
   }
@@ -250,56 +322,89 @@ class ApiService {
   static Future<Map<String, List<Map<String, dynamic>>>> globalSearch(String query) async {
     try {
       final myUsername = await getUsername() ?? "";
+      debugPrint('Global Search initiated by: @$myUsername for query: $query');
       final cleanQuery = query.replaceAll('@', '').trim();
       if (cleanQuery.isEmpty) return {'users': [], 'groups': [], 'messages': []};
 
-      // 1. Search Users (Exact match to prevent discovery of random users)
+      // 1. Search Users (Search by username or display name)
       final List<dynamic> userData = await _supabase
           .from('profiles')
           .select()
-          .eq('username', cleanQuery)
-          .limit(1);
+          .or('username.ilike.*$cleanQuery*,name.ilike.*$cleanQuery*')
+          .limit(10);
+
+      debugPrint('Search Results for "$cleanQuery": Found ${userData.length} users');
 
       List<Map<String, dynamic>> users = [];
-      for (var user in userData) {
-        if (user['username'] == myUsername) continue;
+      if (userData.isNotEmpty) {
+        final List<String> userNames = userData.map((u) => u['username'] as String).toList();
         
-        final relationship = await _getRelationship(myUsername, user['username']);
-        
-        users.add({
-          'username': user['username'],
-          'about': user['about'],
-          'profilePic': user['avatar_url'],
-          'isOnline': user['is_online'],
-          'relationship': relationship,
-        });
+        // Batch fetch relationships to avoid N+1 queries
+        final contacts = await _supabase.from('contacts').select('contact_id').eq('user_id', myUsername).inFilter('contact_id', userNames);
+        final sentReqs = await _supabase.from('contact_requests').select('receiver_id').eq('sender_id', myUsername).eq('status', 'pending').inFilter('receiver_id', userNames);
+        final receivedReqs = await _supabase.from('contact_requests').select('sender_id').eq('receiver_id', myUsername).eq('status', 'pending').inFilter('sender_id', userNames);
+        final blocks = await _supabase.from('blocks').select('blocked_id').eq('blocker_id', myUsername).inFilter('blocked_id', userNames);
+
+        final contactSet = contacts.map((c) => c['contact_id']).toSet();
+        final sentSet = sentReqs.map((r) => r['receiver_id']).toSet();
+        final receivedSet = receivedReqs.map((r) => r['sender_id']).toSet();
+        final blockSet = blocks.map((b) => b['blocked_id']).toSet();
+
+        for (var user in userData) {
+          final uname = user['username'];
+          if (uname == myUsername) continue;
+          
+          String relationship = 'none';
+          if (blockSet.contains(uname)) relationship = 'blocked';
+          else if (contactSet.contains(uname)) relationship = 'contact';
+          else if (sentSet.contains(uname)) relationship = 'sent';
+          else if (receivedSet.contains(uname)) relationship = 'received';
+          
+          users.add({
+            'username': uname,
+            'name': user['name'],
+            'about': user['about'],
+            'profilePic': user['avatar_url'],
+            'isOnline': user['is_online'],
+            'relationship': relationship,
+          });
+        }
       }
 
       // 2. Search Groups (Only groups I'm a member of)
-      final memberData = await _supabase.from('group_members').select('group_id').eq('user_id', myUsername);
-      final myGroupIds = memberData.map((m) => m['group_id']).toList();
-
       List<Map<String, dynamic>> groups = [];
-      if (myGroupIds.isNotEmpty) {
-        final List<dynamic> groupData = await _supabase
-            .from('groups')
-            .select()
-            .inFilter('id', myGroupIds)
-            .ilike('name', '%$cleanQuery%')
-            .limit(5);
-        groups = groupData.map((g) => Map<String, dynamic>.from(g)).toList();
+      try {
+        final memberData = await _supabase.from('group_members').select('group_id').eq('user_id', myUsername);
+        final myGroupIds = memberData.map((m) => m['group_id']).toList();
+
+        if (myGroupIds.isNotEmpty) {
+          final List<dynamic> groupData = await _supabase
+              .from('groups')
+              .select()
+              .inFilter('id', myGroupIds)
+              .ilike('name', '%$cleanQuery%')
+              .limit(5);
+          groups = groupData.map((g) => Map<String, dynamic>.from(g)).toList();
+        }
+      } catch (e) {
+        debugPrint('Group Search Error (Skipping): $e');
       }
 
       // 3. Search Messages
-      final List<dynamic> msgData = await _supabase
-          .from('messages')
-          .select()
-          .or('sender_id.eq.$myUsername,receiver_id.eq.$myUsername')
-          .ilike('content', '%$cleanQuery%')
-          .order('created_at', ascending: false)
-          .limit(10);
-      
-      List<Map<String, dynamic>> messages = List<Map<String, dynamic>>.from(msgData.map((m) => Map<String, dynamic>.from(m)));
+      List<Map<String, dynamic>> messages = [];
+      try {
+        final List<dynamic> msgData = await _supabase
+            .from('messages')
+            .select()
+            .or('sender_id.eq.$myUsername,receiver_id.eq.$myUsername')
+            .ilike('content', '%$cleanQuery%')
+            .order('created_at', ascending: false)
+            .limit(10);
+        
+        messages = List<Map<String, dynamic>>.from(msgData.map((m) => Map<String, dynamic>.from(m)));
+      } catch (e) {
+        debugPrint('Message Search Error (Skipping): $e');
+      }
 
       return {
         'users': users,
@@ -307,14 +412,70 @@ class ApiService {
         'messages': messages,
       };
     } catch (e) {
+      debugPrint('Global Search Error: $e');
       return {'users': [], 'groups': [], 'messages': []};
     }
   }
 
   static Future<List<Map<String, dynamic>>> searchUsers(String query) async {
-    // Keep for backward compatibility or refactor searchUsers usages
+    if (query.isEmpty) {
+      return await getSuggestedUsers();
+    }
     final results = await globalSearch(query);
     return results['users']!;
+  }
+
+  static Future<List<Map<String, dynamic>>> getSuggestedUsers() async {
+    try {
+      final myUsername = await getUsername() ?? "";
+      debugPrint('Fetching suggested users for: @$myUsername');
+      
+      // Fetch some profiles (e.g., latest 20)
+      final List<dynamic> userData = await _supabase
+          .from('profiles')
+          .select()
+          .neq('username', myUsername)
+          .order('created_at', ascending: false)
+          .limit(20);
+
+      debugPrint('Found ${userData.length} potential suggestions in database');
+
+      List<Map<String, dynamic>> users = [];
+      if (userData.isNotEmpty) {
+        final List<String> userNames = userData.map((u) => u['username'] as String).toList();
+        
+        // Batch fetch relationships
+        final contacts = await _supabase.from('contacts').select('contact_id').eq('user_id', myUsername).inFilter('contact_id', userNames);
+        final sentReqs = await _supabase.from('contact_requests').select('receiver_id').eq('sender_id', myUsername).eq('status', 'pending').inFilter('receiver_id', userNames);
+        final receivedReqs = await _supabase.from('contact_requests').select('sender_id').eq('receiver_id', myUsername).eq('status', 'pending').inFilter('sender_id', userNames);
+        
+        final contactSet = contacts.map((c) => c['contact_id']).toSet();
+        final sentSet = sentReqs.map((r) => r['receiver_id']).toSet();
+        final receivedSet = receivedReqs.map((r) => r['sender_id']).toSet();
+
+        for (var user in userData) {
+          final uname = user['username'];
+          
+          String relationship = 'none';
+          if (contactSet.contains(uname)) relationship = 'contact';
+          else if (sentSet.contains(uname)) relationship = 'sent';
+          else if (receivedSet.contains(uname)) relationship = 'received';
+          
+          users.add({
+            'username': uname,
+            'name': user['name'],
+            'about': user['about'],
+            'profilePic': user['avatar_url'],
+            'isOnline': user['is_online'],
+            'relationship': relationship,
+          });
+        }
+      }
+      return users;
+    } catch (e) {
+      debugPrint('Get Suggested Users Error: $e');
+      return [];
+    }
   }
 
   static Future<String> _getRelationship(String myUser, String otherUser) async {
@@ -367,6 +528,7 @@ class ApiService {
       
       return List<Map<String, dynamic>>.from(data.map((r) => {'sender': r['sender_id']}));
     } catch (e) {
+      debugPrint('Get Suggested Users Error: $e');
       return [];
     }
   }
@@ -407,7 +569,7 @@ class ApiService {
       
       return true;
     } catch (e) {
-      print('Block user error: $e');
+      debugPrint('Block user error: $e');
       return false;
     }
   }
@@ -507,7 +669,7 @@ class ApiService {
 
       return true;
     } catch (e) {
-      print('Send message error: $e');
+      debugPrint('Send message error: $e');
       return false;
     }
   }
@@ -553,7 +715,7 @@ class ApiService {
       await LocalDbService.markAsDeletedForMe(messageId.toString(), myUser);
       return true;
     } catch (e) {
-      print('Delete for me error: $e');
+      debugPrint('Delete for me error: $e');
       return false;
     }
   }
@@ -568,7 +730,7 @@ class ApiService {
       });
       return true;
     } catch (e) {
-      print('Leave group error: $e');
+      debugPrint('Leave group error: $e');
       return false;
     }
   }
@@ -578,7 +740,7 @@ class ApiService {
       await _supabase.from('groups').delete().eq('id', groupId);
       return true;
     } catch (e) {
-      print('Delete group error: $e');
+      debugPrint('Delete group error: $e');
       return false;
     }
   }
@@ -601,7 +763,7 @@ class ApiService {
         'reaction': emoji,
       });
     } catch (e) {
-      print('Reaction error: $e');
+      debugPrint('Reaction error: $e');
     }
   }
 
@@ -609,6 +771,7 @@ class ApiService {
     try {
       return await _supabase.from('message_reactions').select().eq('message_id', messageId);
     } catch (e) {
+      debugPrint('Get Suggested Users Error: $e');
       return [];
     }
   }
@@ -627,7 +790,7 @@ class ApiService {
           .update({'is_read': true})
           .match({'conversation_id': convId, 'receiver_id': myUsername, 'is_read': false});
     } catch (e) {
-      print('Mark as read error: $e');
+      debugPrint('Mark as read error: $e');
     }
   }
 
@@ -691,6 +854,7 @@ class ApiService {
           })
       );
     } catch (e) {
+      debugPrint('Get Suggested Users Error: $e');
       return [];
     }
   }
@@ -706,7 +870,7 @@ class ApiService {
       }
       await _saveMessagesLocally(data);
     } catch (e) {
-      print('Sync messages error: $e');
+      debugPrint('Sync messages error: $e');
     }
   }
 
@@ -735,7 +899,7 @@ class ApiService {
     if (messages.isNotEmpty) {
       final ids = messages.map((m) => m['id']).toList();
       final reactionsRes = await _supabase.from('message_reactions').select().inFilter('message_id', ids);
-      if (reactionsRes != null) {
+      if (reactionsRes.isNotEmpty) {
         await LocalDbService.saveItems('message_reactions', List<Map<String, dynamic>>.from(reactionsRes));
       }
     }
@@ -878,7 +1042,7 @@ class ApiService {
       await _saveConversationsLocally(results);
       return results;
     } catch (e) {
-      print('Get conversations error: $e');
+      debugPrint('Get conversations error: $e');
       return [];
     }
   }
@@ -951,7 +1115,7 @@ class ApiService {
       results.sort((a, b) => DateTime.parse(b['timestamp']).compareTo(DateTime.parse(a['timestamp'])));
       await _saveConversationsLocally(results);
     } catch (e) {
-      print('Sync conversations error: $e');
+      debugPrint('Sync conversations error: $e');
     }
   }
 
@@ -1013,6 +1177,7 @@ class ApiService {
 
       return await _supabase.from('groups').select().inFilter('id', groupIds);
     } catch (e) {
+      debugPrint('Get Suggested Users Error: $e');
       return [];
     }
   }
@@ -1088,6 +1253,7 @@ class ApiService {
       await _saveTasksLocally(data);
       return List<Map<String, dynamic>>.from(data.map((t) => Map<String, dynamic>.from(t)));
     } catch (e) {
+      debugPrint('Get Suggested Users Error: $e');
       return [];
     }
   }
@@ -1472,6 +1638,7 @@ class ApiService {
       
       return List<Map<String, dynamic>>.from(data.map((n) => Map<String, dynamic>.from(n)));
     } catch (e) {
+      debugPrint('Get Suggested Users Error: $e');
       return [];
     }
   }
@@ -1635,21 +1802,33 @@ class ApiService {
 
   static Future<bool> deleteAccount(String username) async {
     try {
-      // 1. Remove from all groups
-      await _supabase.from('group_members').delete().eq('user_id', username);
+      final usernameLower = username.toLowerCase();
       
-      // 2. Delete messages (as sender)
-      await _supabase.from('messages').delete().eq('sender_id', username);
-      
-      // 3. Clear local DB
+      // 1. First, try to call the secure DB function to delete the auth account
+      // This will trigger the CASCADE delete for the profile and all linked tables.
+      try {
+        await _supabase.rpc('delete_own_user');
+      } catch (e) {
+        print('RPC delete_own_user failed, falling back to manual: $e');
+        
+        // 2. Manual Fallback (Only if RPC fails/doesn't exist)
+        // We delete from child tables first to avoid FK constraints
+        await _supabase.from('group_members').delete().eq('user_id', usernameLower);
+        await _supabase.from('tasks').delete().or('created_by.eq.${usernameLower},assigned_to.eq.${usernameLower}');
+        await _supabase.from('contact_requests').delete().or('sender_id.eq.${usernameLower},receiver_id.eq.${usernameLower}');
+        await _supabase.from('contacts').delete().or('user_id.eq.${usernameLower},contact_id.eq.${usernameLower}');
+        await _supabase.from('message_reactions').delete().eq('user_id', usernameLower);
+        await _supabase.from('messages').delete().eq('sender_id', usernameLower);
+        await _supabase.from('profiles').delete().eq('username', usernameLower);
+      }
+
+      // 3. Clear Local Data and Logout
       await LocalDbService.clearAll();
-
-      // 4. Delete Profile
-      await _supabase.from('profiles').delete().eq('username', username);
-
       await logout();
+
       return true;
     } catch (e) {
+      print('Delete account error: $e');
       return false;
     }
   }

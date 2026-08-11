@@ -350,8 +350,9 @@ class _HomeScreenContentState extends State<HomeScreenContent> {
 
       // 2. Refresh after background sync
       Future.delayed(const Duration(seconds: 2), () async {
+        if (!mounted) return;
+        final syncedConvs = await ApiService.getConversations(_myUsername!);
         if (mounted) {
-          final syncedConvs = await ApiService.getConversations(_myUsername!);
           setState(() => _conversations = syncedConvs);
         }
       });
@@ -597,7 +598,32 @@ class _HomeScreenContentState extends State<HomeScreenContent> {
     final messages = _searchResults['messages'] ?? [];
 
     if (users.isEmpty && groups.isEmpty && messages.isEmpty) {
-      return const Center(child: Text("No results found", style: TextStyle(color: Colors.white38)));
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(30),
+              decoration: BoxDecoration(
+                color: const Color(0xFF16233A),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(Icons.person_off_rounded, size: 60, color: Colors.white.withValues(alpha: 0.1)),
+            ),
+            const SizedBox(height: 20),
+            const Text(
+              "No results found",
+              style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              "We couldn't find anything matching \"${_searchController.text}\"",
+              style: const TextStyle(color: Colors.white38, fontSize: 14),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      );
     }
 
     return ListView(
@@ -634,14 +660,16 @@ class _HomeScreenContentState extends State<HomeScreenContent> {
 
   Widget _buildUserSearchResult(Map<String, dynamic> user) {
     final username = user['username'] as String;
+    final displayName = user['name'] ?? username;
+    
     return ListTile(
       leading: CircleAvatar(
         backgroundColor: const Color(0xFF16233A), 
         backgroundImage: user['profilePic'] != null ? NetworkImage(user['profilePic']) : null, 
         child: user['profilePic'] == null ? const Icon(Icons.person, color: Colors.white) : null
       ),
-      title: Text(username, style: const TextStyle(color: Colors.white)),
-      subtitle: Text(user['about'] ?? "Available", style: const TextStyle(color: Colors.white38, fontSize: 12)),
+      title: Text(displayName, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+      subtitle: Text("@$username", style: const TextStyle(color: Colors.white38, fontSize: 12)),
       trailing: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         decoration: BoxDecoration(
@@ -649,7 +677,7 @@ class _HomeScreenContentState extends State<HomeScreenContent> {
           borderRadius: BorderRadius.circular(10),
         ),
         child: Text(
-          user['relationship'] == 'contact' ? "Contact" : "View Profile",
+          user['relationship'] == 'contact' ? "Message" : "Profile",
           style: TextStyle(
             color: user['relationship'] == 'contact' ? const Color(0xFF00C48C) : Colors.white38,
             fontSize: 10,
@@ -659,9 +687,11 @@ class _HomeScreenContentState extends State<HomeScreenContent> {
       ),
       onTap: () {
         setState(() => _isSearching = false);
-        Navigator.of(context).push(MaterialPageRoute(
-          builder: (context) => ContactProfileScreen(username: username)
-        ));
+        if (user['relationship'] == 'contact') {
+          Navigator.of(context).push(MaterialPageRoute(builder: (context) => ChatScreen(username: username)));
+        } else {
+          Navigator.of(context).push(MaterialPageRoute(builder: (context) => ContactProfileScreen(username: username)));
+        }
       },
     );
   }

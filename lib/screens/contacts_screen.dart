@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import '../services/api_service.dart';
@@ -14,35 +15,71 @@ class _ContactsScreenState extends State<ContactsScreen> {
   final _searchController = TextEditingController();
   List<Map<String, dynamic>> _searchResults = [];
   List<Map<String, dynamic>> _requests = [];
+  List<Map<String, dynamic>> _suggestedUsers = [];
   bool _isSearching = false;
   bool _isLoading = true;
+  bool _isSearchLoading = false;
+  Timer? _debounce;
 
   @override
   void initState() {
     super.initState();
-    _loadRequests();
+    _loadInitialData();
+  }
+
+  Future<void> _loadInitialData() async {
+    final results = await Future.wait([
+      ApiService.getContactRequests(),
+      ApiService.getSuggestedUsers(),
+    ]);
+    
+    if (mounted) {
+      setState(() {
+        _requests = results[0] as List<Map<String, dynamic>>;
+        _suggestedUsers = results[1] as List<Map<String, dynamic>>;
+        _isLoading = false;
+      });
+    }
   }
 
   Future<void> _loadRequests() async {
     final requests = await ApiService.getContactRequests();
-    setState(() {
-      _requests = requests;
-      _isLoading = false;
-    });
+    if (mounted) setState(() => _requests = requests);
   }
 
-  void _handleSearch(String query) async {
+  void _handleSearch(String query) {
+    if (_debounce?.isActive ?? false) _debounce?.cancel();
+    
     if (query.isEmpty) {
       setState(() {
         _isSearching = false;
+        _isSearchLoading = false;
         _searchResults = [];
       });
       return;
     }
 
-    setState(() => _isSearching = true);
-    final results = await ApiService.searchUsers(query);
-    setState(() => _searchResults = results);
+    setState(() {
+      _isSearching = true;
+      _isSearchLoading = true;
+    });
+
+    _debounce = Timer(const Duration(milliseconds: 500), () async {
+      final results = await ApiService.searchUsers(query);
+      if (mounted) {
+        setState(() {
+          _searchResults = results;
+          _isSearchLoading = false;
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    _debounce?.cancel();
+    super.dispose();
   }
 
   @override
@@ -67,7 +104,10 @@ class _ContactsScreenState extends State<ContactsScreen> {
                     children: [
                       if (_requests.isNotEmpty && !_isSearching) _buildRequestsSection(),
                       if (_isSearching) _buildSearchResults()
-                      else _buildEmptyIllustration(),
+                      else ...[
+                        if (_suggestedUsers.isNotEmpty) _buildSuggestedSection()
+                        else _buildEmptyIllustration(),
+                      ],
                     ],
                   ),
                 ),
@@ -240,7 +280,105 @@ class _ContactsScreenState extends State<ContactsScreen> {
     );
   }
 
+  Widget _buildSuggestedSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.fromLTRB(20, 20, 20, 10),
+          child: Text("Suggested Connections", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+        ),
+        ListView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: _suggestedUsers.length,
+          itemBuilder: (context, index) {
+            final user = _suggestedUsers[index];
+            return _buildUserTile(user);
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildUserTile(Map<String, dynamic> user) {
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 5),
+      leading: Stack(
+        children: [
+          CircleAvatar(
+            radius: 25,
+            backgroundColor: const Color(0xFF16233A),
+            backgroundImage: user['profilePic'] != null ? NetworkImage(user['profilePic']) : null,
+            child: user['profilePic'] == null ? const Icon(Icons.person, color: Colors.white70) : null,
+          ),
+          if (user['isOnline'] == true)
+            Positioned(
+              right: 0,
+              bottom: 0,
+              child: Container(
+                width: 12,
+                height: 12,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF00C48C),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: const Color(0xFF0F1B2D), width: 2),
+                ),
+              ),
+            ),
+        ],
+      ),
+      title: Text(
+        user['name'] ?? user['username'], 
+        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)
+      ),
+      subtitle: Text("@${user['username']}", style: const TextStyle(color: Colors.white38, fontSize: 13)),
+      trailing: _buildActionButton(user),
+      onTap: () => _showUserProfile(user),
+    );
+  }
+
   Widget _buildSearchResults() {
+    if (_isSearchLoading) {
+      return const Column(
+        children: [
+          SizedBox(height: 100),
+          Center(child: CircularProgressIndicator(color: Color(0xFF2979FF))),
+          SizedBox(height: 20),
+          Text("Searching...", style: TextStyle(color: Colors.white38, fontSize: 14)),
+        ],
+      );
+    }
+
+    if (_searchResults.isEmpty) {
+      return Center(
+        child: Column(
+          children: [
+            const SizedBox(height: 80),
+            Container(
+              padding: const EdgeInsets.all(30),
+              decoration: BoxDecoration(
+                color: const Color(0xFF16233A),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(Icons.search_off_rounded, size: 60, color: Colors.white.withValues(alpha: 0.1)),
+            ),
+            const SizedBox(height: 20),
+            const Text(
+              "No user found",
+              style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              "No account matches \"${_searchController.text}\"",
+              style: const TextStyle(color: Colors.white38, fontSize: 14),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      );
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -254,37 +392,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
           itemCount: _searchResults.length,
           itemBuilder: (context, index) {
             final user = _searchResults[index];
-            return ListTile(
-              contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 5),
-              leading: Stack(
-                children: [
-                  CircleAvatar(
-                    radius: 25,
-                    backgroundColor: const Color(0xFF16233A),
-                    backgroundImage: user['profilePic'] != null ? NetworkImage(user['profilePic']) : null,
-                    child: user['profilePic'] == null ? const Icon(Icons.person, color: Colors.white70) : null,
-                  ),
-                  if (user['isOnline'] == true)
-                    Positioned(
-                      right: 0,
-                      bottom: 0,
-                      child: Container(
-                        width: 12,
-                        height: 12,
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF00C48C),
-                          shape: BoxShape.circle,
-                          border: Border.all(color: const Color(0xFF0F1B2D), width: 2),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-              title: Text(user['username'], style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-              subtitle: Text(user['about'] ?? "Available", style: const TextStyle(color: Colors.white38, fontSize: 13)),
-              trailing: _buildActionButton(user),
-              onTap: () => _showUserProfile(user),
-            );
+            return _buildUserTile(user);
           },
         ),
       ],
