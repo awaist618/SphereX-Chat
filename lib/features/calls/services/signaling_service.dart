@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:realtime_client/realtime_client.dart';
 
 class SignalingService {
   final _supabase = Supabase.instance.client;
@@ -13,10 +15,10 @@ class SignalingService {
     
     _channel = _supabase.channel('call:$callId');
 
-    // Bypass static type checking for extension methods
-    (_channel as dynamic).onBroadcast(
+    _channel!.onBroadcast(
       event: 'signal',
       callback: (payload) {
+        debugPrint('Signaling received: $payload');
         if (_eventController != null && !_eventController!.isClosed) {
           _eventController!.add(Map<String, dynamic>.from(payload));
         }
@@ -26,20 +28,24 @@ class SignalingService {
 
   Future<void> sendGlobalInvite(String receiverId, Map<String, dynamic> data) async {
     final inviteChannel = _supabase.channel('signaling:$receiverId');
+    debugPrint('Sending global invite to $receiverId...');
     
     await inviteChannel.subscribe((status, [error]) async {
       if (status == RealtimeSubscribeStatus.subscribed) {
         try {
-          // Bypass static type checking for extension methods
-          await (inviteChannel as dynamic).sendBroadcast(
+          await inviteChannel.sendBroadcastMessage(
             event: 'signal',
             payload: data,
           );
+          debugPrint('Global invite broadcasted successfully');
         } catch (e) {
-          print('Broadcast send error: $e');
+          debugPrint('Global broadcast error: $e');
         }
-        await Future.delayed(const Duration(milliseconds: 500));
+        // Increased delay to ensure the broadcast is flushed before channel is removed
+        await Future.delayed(const Duration(seconds: 2));
         await _supabase.removeChannel(inviteChannel);
+      } else if (status == RealtimeSubscribeStatus.channelError) {
+        debugPrint('Signaling subscription error: $error');
       }
     });
   }
@@ -48,16 +54,16 @@ class SignalingService {
     if (_channel == null) return;
     
     try {
-      // Bypass static type checking for extension methods
-      await (_channel as dynamic).sendBroadcast(
+      await _channel!.sendBroadcastMessage(
         event: 'signal',
         payload: {
           'type': type,
           ...data,
         },
       );
+      debugPrint('Signal sent: $type');
     } catch (e) {
-      print('Signal send error: $e');
+      debugPrint('Signal broadcast error: $e');
     }
   }
 

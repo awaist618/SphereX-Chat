@@ -84,39 +84,42 @@ class _GroupsScreenState extends State<GroupsScreen> {
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: Colors.white.withValues(alpha: 0.03)),
       ),
-      child: ListTile(
-        contentPadding: const EdgeInsets.all(12),
-        onTap: () => Navigator.push(context, MaterialPageRoute(
-          builder: (context) => ChatScreen(username: group['name'], groupId: group['id'])
-        )),
-        leading: Container(
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            border: Border.all(color: const Color(0xFF2979FF).withValues(alpha: 0.1), width: 2),
+      child: Material(
+        color: Colors.transparent,
+        child: ListTile(
+          contentPadding: const EdgeInsets.all(12),
+          onTap: () => Navigator.push(context, MaterialPageRoute(
+            builder: (context) => ChatScreen(username: group['name'], groupId: group['id'])
+          )),
+          leading: Container(
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(color: const Color(0xFF2979FF).withValues(alpha: 0.1), width: 2),
+            ),
+            child: CircleAvatar(
+              radius: 28,
+              backgroundColor: const Color(0xFF0F1B2D),
+              backgroundImage: group['avatar_url'] != null ? NetworkImage(group['avatar_url']) : null,
+              child: group['avatar_url'] == null 
+                ? const Icon(Icons.groups_rounded, color: Color(0xFF2979FF), size: 30) 
+                : null,
+            ),
           ),
-          child: CircleAvatar(
-            radius: 28,
-            backgroundColor: const Color(0xFF0F1B2D),
-            backgroundImage: group['avatar_url'] != null ? NetworkImage(group['avatar_url']) : null,
-            child: group['avatar_url'] == null 
-              ? const Icon(Icons.groups_rounded, color: Color(0xFF2979FF), size: 30) 
-              : null,
+          title: Text(
+            group['name'], 
+            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)
           ),
-        ),
-        title: Text(
-          group['name'], 
-          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)
-        ),
-        subtitle: Padding(
-          padding: const EdgeInsets.only(top: 4),
-          child: Text(
-            group['description'] ?? "No description available", 
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(color: Colors.white38, fontSize: 13)
+          subtitle: Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              group['description'] ?? "No description available", 
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Colors.white38, fontSize: 13)
+            ),
           ),
+          trailing: const Icon(Icons.chevron_right_rounded, color: Colors.white12),
         ),
-        trailing: const Icon(Icons.chevron_right_rounded, color: Colors.white12),
       ),
     );
   }

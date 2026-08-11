@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/api_service.dart';
 import 'chat_screen.dart';
 import 'tasks_screen.dart';
+import 'calls_history_screen.dart';
 
 class NotificationsScreen extends StatefulWidget {
   const NotificationsScreen({super.key});
@@ -80,10 +81,16 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         elevation: 0,
         centerTitle: true,
         actions: [
-          if (_notifications.isNotEmpty)
+          if (_notifications.any((n) => n['is_read'] == false))
             TextButton(
-              onPressed: () {
-                // Implement Mark All as Read if needed
+              onPressed: () async {
+                setState(() {
+                  for (var n in _notifications) {
+                    n['is_read'] = true;
+                  }
+                });
+                await ApiService.markAllNotificationsAsRead();
+                // Optionally re-fetch to ensure sync, but local update is enough for UX
               },
               child: const Text("Mark all read", style: TextStyle(color: Color(0xFF2979FF), fontSize: 12)),
             ),
@@ -103,7 +110,31 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                         child: ListView.builder(
                           padding: const EdgeInsets.only(top: 10, bottom: 20),
                           itemCount: _filteredNotifications.length,
-                          itemBuilder: (context, index) => _buildNotificationCard(_filteredNotifications[index]),
+                          itemBuilder: (context, index) {
+                            final notification = _filteredNotifications[index];
+                            return Dismissible(
+                              key: Key(notification['id'].toString()),
+                              direction: DismissDirection.endToStart,
+                              background: Container(
+                                alignment: Alignment.centerRight,
+                                padding: const EdgeInsets.only(right: 30),
+                                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFFF4C61),
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                                child: const Icon(Icons.delete_outline_rounded, color: Colors.white, size: 28),
+                              ),
+                              onDismissed: (direction) {
+                                final id = notification['id'].toString();
+                                setState(() {
+                                  _notifications.removeWhere((n) => n['id'].toString() == id);
+                                });
+                                ApiService.deleteNotification(id);
+                              },
+                              child: _buildNotificationCard(notification),
+                            );
+                          },
                         ),
                       ),
           ),
@@ -169,6 +200,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         icon = Icons.person_add_rounded;
         color = const Color(0xFF00C48C);
         break;
+      case 'missed_call':
+        icon = Icons.phone_missed_rounded;
+        color = const Color(0xFFFF4C61);
+        break;
       default:
         icon = Icons.notifications_rounded;
         color = Colors.white54;
@@ -191,6 +226,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         } else if (type == 'task') {
           Navigator.push(context, MaterialPageRoute(
             builder: (context) => const TasksScreen()
+          ));
+        } else if (type == 'missed_call') {
+          Navigator.push(context, MaterialPageRoute(
+            builder: (context) => CallsHistoryScreen()
           ));
         }
       },

@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../widgets/stars_background.dart';
 import '../widgets/spherex_logo.dart';
+import '../services/api_service.dart';
 import 'login_screen.dart';
+import 'home_screen.dart';
 
 class WelcomeScreen extends StatefulWidget {
   const WelcomeScreen({super.key});
@@ -43,12 +46,22 @@ class _WelcomeScreenState extends State<WelcomeScreen> with TickerProviderStateM
 
     _fadeController.forward();
 
-    // Navigate to Login Screen after 3.5 seconds
-    Future.delayed(const Duration(milliseconds: 3500), () {
+    // Navigate to next Screen after 3.5 seconds
+    Future.delayed(const Duration(milliseconds: 3500), () async {
       if (mounted) {
+        final session = Supabase.instance.client.auth.currentSession;
+        final username = await ApiService.getUsername();
+        
+        Widget nextScreen = const LoginScreen();
+        if (session != null && username != null) {
+          nextScreen = const HomeScreen();
+        }
+
+        if (!mounted) return;
+
         Navigator.of(context).pushReplacement(
           PageRouteBuilder(
-            pageBuilder: (context, animation, secondaryAnimation) => const LoginScreen(),
+            pageBuilder: (context, animation, secondaryAnimation) => nextScreen,
             transitionsBuilder: (context, animation, secondaryAnimation, child) {
               return FadeTransition(opacity: animation, child: child);
             },
@@ -94,14 +107,14 @@ class _WelcomeScreenState extends State<WelcomeScreen> with TickerProviderStateM
                     shape: BoxShape.circle,
                     boxShadow: [
                       BoxShadow(
-                        color: const Color(0xFF7C4DFF).withValues(alpha: 0.1 + (_pulseController.value * 0.1)),
+                        color: const Color(0xFF2979FF).withValues(alpha: 0.1 + (_pulseController.value * 0.1)),
                         blurRadius: 50,
                         spreadRadius: 10,
                       ),
                     ],
                     gradient: RadialGradient(
                       colors: [
-                        const Color(0xFF7C4DFF).withValues(alpha: 0.3),
+                        const Color(0xFF2979FF).withValues(alpha: 0.3),
                         Colors.transparent,
                       ],
                     ),
@@ -213,12 +226,12 @@ class _LoadingIndicatorState extends State<LoadingIndicator> with SingleTickerPr
           width: 40,
           height: 4,
           decoration: BoxDecoration(
-            color: const Color(0xFF7C4DFF).withValues(alpha: opacity),
+            color: const Color(0xFF2979FF).withValues(alpha: opacity),
             borderRadius: BorderRadius.circular(2),
             boxShadow: [
               if (opacity > 0.8)
                 BoxShadow(
-                  color: const Color(0xFF7C4DFF).withValues(alpha: 0.5),
+                  color: const Color(0xFF2979FF).withValues(alpha: 0.5),
                   blurRadius: 8,
                 ),
             ],

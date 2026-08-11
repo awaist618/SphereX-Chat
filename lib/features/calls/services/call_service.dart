@@ -175,4 +175,8 @@ class CallService {
   void toggleMute(bool muted) => _webRTCService.toggleMute(muted);
   void toggleCamera(bool enabled) => _webRTCService.toggleCamera(enabled);
   Future<void> switchCamera() => _webRTCService.switchCamera();
+  
+  Future<void> setSpeakerphoneOn(bool on) async {
+    await Helper.setSpeakerphoneOn(on);
+  }
 }

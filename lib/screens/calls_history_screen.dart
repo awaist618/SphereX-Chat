@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../services/api_service.dart';
 import 'call_screen.dart';
+import 'chat_screen.dart';
 import '../features/calls/models/call_model.dart' as model;
 
 class CallsHistoryScreen extends StatefulWidget {
@@ -64,6 +65,137 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen> {
     );
   }
 
+  void _showCallDetails(Map<String, dynamic> call) async {
+    final details = await ApiService.getCallDetails(call['id'].toString());
+    if (details == null || !mounted) return;
+
+    final createdAt = DateTime.parse(details['created_at']).toLocal();
+    final answeredAt = details['answered_at'] != null ? DateTime.parse(details['answered_at']).toLocal() : null;
+    final endedAt = details['ended_at'] != null ? DateTime.parse(details['ended_at']).toLocal() : null;
+    
+    Duration? duration;
+    if (answeredAt != null && endedAt != null) {
+      duration = endedAt.difference(answeredAt);
+    }
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF0A2540),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(30))),
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(30),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(10))),
+            const SizedBox(height: 30),
+            CircleAvatar(
+              radius: 50,
+              backgroundColor: const Color(0xFF16233A),
+              backgroundImage: details['profilePic'] != null ? NetworkImage(details['profilePic']) : null,
+              child: details['profilePic'] == null ? const Icon(Icons.person, size: 50, color: Colors.white10) : null,
+            ),
+            const SizedBox(height: 20),
+            Text(details['otherUser'], style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w900)),
+            Text(details['isOutgoing'] ? "Outgoing Call" : "Incoming Call", style: const TextStyle(color: Colors.white38, fontSize: 14)),
+            const SizedBox(height: 30),
+            _buildDetailRow(Icons.calendar_today_rounded, "Date", DateFormat('EEEE, MMM d').format(createdAt)),
+            _buildDetailRow(Icons.access_time_rounded, "Time", DateFormat('h:mm a').format(createdAt)),
+            if (duration != null)
+              _buildDetailRow(Icons.timer_outlined, "Duration", "${duration.inMinutes}m ${duration.inSeconds % 60}s"),
+            _buildDetailRow(Icons.info_outline, "Status", details['status'].toString().toUpperCase(), color: _getStatusColor(details['status'])),
+            const SizedBox(height: 40),
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      Navigator.push(context, MaterialPageRoute(builder: (context) => ChatScreen(username: details['otherUser'])));
+                    },
+                    icon: const Icon(Icons.message_rounded, size: 18),
+                    label: const FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text("Message"),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF16233A),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 15, horizontal: 8),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      Navigator.push(context, MaterialPageRoute(
+                        builder: (context) => CallScreen(
+                          otherUsername: details['otherUser'],
+                          otherProfilePic: details['profilePic'],
+                          type: details['type'] == 'video' ? model.CallType.video : model.CallType.voice,
+                        ),
+                      ));
+                    },
+                    icon: const Icon(Icons.call_rounded, size: 18),
+                    label: const FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text("Call Back"),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF2979FF),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 15, horizontal: 8),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDetailRow(IconData icon, String label, String value, {Color? color}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Row(
+        children: [
+          Icon(icon, color: Colors.white24, size: 20),
+          const SizedBox(width: 15),
+          Text(label, style: const TextStyle(color: Colors.white38, fontSize: 14)),
+          const Spacer(),
+          Flexible(
+            child: Text(
+              value, 
+              style: TextStyle(color: color ?? Colors.white70, fontSize: 14, fontWeight: FontWeight.bold),
+              textAlign: TextAlign.end,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Color _getStatusColor(String status) {
+    switch (status.toLowerCase()) {
+      case 'missed':
+      case 'rejected':
+      case 'cancelled':
+        return const Color(0xFFFF4C61);
+      case 'connected':
+      case 'ended':
+        return const Color(0xFF00C48C);
+      default:
+        return Colors.white54;
+    }
+  }
+
   Widget _buildCallCard(Map<String, dynamic> call) {
     final bool isOutgoing = call['isOutgoing'];
     final String status = (call['status'] ?? 'ended').toString().toLowerCase();
@@ -90,6 +222,7 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen> {
       ),
       child: ListTile(
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        onTap: () => _showCallDetails(call),
         leading: Stack(
           children: [
             CircleAvatar(
@@ -123,9 +256,13 @@ class _CallsHistoryScreenState extends State<CallsHistoryScreen> {
           children: [
             Icon(statusIcon, size: 14, color: statusColor),
             const SizedBox(width: 6),
-            Text(
-              "${isOutgoing ? 'Outgoing' : 'Incoming'} • ${DateFormat('MMM d, h:mm a').format(createdAt)}",
-              style: const TextStyle(color: Colors.white38, fontSize: 12),
+            Expanded(
+              child: Text(
+                "${isOutgoing ? 'Outgoing' : 'Incoming'} • ${DateFormat('MMM d, h:mm a').format(createdAt)}",
+                style: const TextStyle(color: Colors.white38, fontSize: 12),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
           ],
         ),

@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:audioplayers/audioplayers.dart';
 import '../features/calls/models/call_model.dart' as model;
 import '../features/calls/services/call_service.dart';
 import '../features/calls/services/permission_service.dart';
@@ -31,6 +33,7 @@ class CallScreen extends StatefulWidget {
 
 class _CallScreenState extends State<CallScreen> {
   final CallService _callService = CallService();
+  final AudioPlayer _audioPlayer = AudioPlayer();
   model.CallStatus _status = model.CallStatus.idle;
   
   final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
@@ -38,6 +41,7 @@ class _CallScreenState extends State<CallScreen> {
   
   bool _isMuted = false;
   bool _isCameraOff = false;
+  bool _isSpeakerOn = true;
   int _duration = 0;
   Timer? _timer;
 
@@ -57,8 +61,11 @@ class _CallScreenState extends State<CallScreen> {
   void _setupCallService() {
     _callService.onStatusChange = (status) {
       if (!mounted) return;
+      debugPrint('Call status changed: $status');
       setState(() => _status = status);
       
+      _handleStatusAudio(status);
+
       if (status == model.CallStatus.connected) {
         _startTimer();
       } else if (status == model.CallStatus.ended) {
@@ -84,6 +91,37 @@ class _CallScreenState extends State<CallScreen> {
     };
   }
 
+  void _handleStatusAudio(model.CallStatus status) {
+    if (status == model.CallStatus.outgoing) {
+      _playAudio('sounds/dialing.mp3', loop: true);
+    } else if (status == model.CallStatus.ringing) {
+      _playAudio('sounds/ringing.mp3', loop: true);
+    } else {
+      _audioPlayer.stop();
+    }
+  }
+
+  Future<void> _playAudio(String path, {bool loop = false}) async {
+    try {
+      // Check if we are running in an environment where we can play assets
+      // and if the asset likely exists.
+      await _audioPlayer.stop();
+      if (loop) {
+        await _audioPlayer.setReleaseMode(ReleaseMode.loop);
+      } else {
+        await _audioPlayer.setReleaseMode(ReleaseMode.release);
+      }
+      
+      // We wrap in a try-catch because if the folder doesn't exist in pubspec
+      // or the file is missing, it will throw an exception.
+      await _audioPlayer.play(AssetSource(path)).catchError((e) {
+        debugPrint('Audio asset not found or playable: $path');
+      });
+    } catch (e) {
+      debugPrint('Error playing audio: $e');
+    }
+  }
+
   Future<void> _startFlow() async {
     final hasPermission = await PermissionService.checkPermissions(widget.type == model.CallType.video);
     if (!hasPermission) {
@@ -98,6 +136,7 @@ class _CallScreenState extends State<CallScreen> {
 
     if (widget.isIncoming) {
       setState(() => _status = model.CallStatus.ringing);
+      _handleStatusAudio(model.CallStatus.ringing);
     } else {
       await _callService.startCall(widget.otherUsername, widget.type);
     }
@@ -144,6 +183,11 @@ class _CallScreenState extends State<CallScreen> {
     _callService.switchCamera();
   }
 
+  void _toggleSpeaker() {
+    setState(() => _isSpeakerOn = !_isSpeakerOn);
+    _callService.setSpeakerphoneOn(_isSpeakerOn);
+  }
+
   String _formatDuration(int seconds) {
     final mins = seconds ~/ 60;
     final secs = seconds % 60;
@@ -153,6 +197,7 @@ class _CallScreenState extends State<CallScreen> {
   @override
   void dispose() {
     _stopTimer();
+    _audioPlayer.dispose();
     _localRenderer.dispose();
     _remoteRenderer.dispose();
     super.dispose();
@@ -303,7 +348,7 @@ class _CallScreenState extends State<CallScreen> {
               _buildIconButton(_isCameraOff ? Icons.videocam_off : Icons.videocam, _toggleCamera, _isCameraOff),
             if (widget.type == model.CallType.video)
               _buildIconButton(Icons.cameraswitch, _switchCamera, false),
-            _buildIconButton(Icons.volume_up, () {}, false),
+            _buildIconButton(_isSpeakerOn ? Icons.volume_up : Icons.volume_off, _toggleSpeaker, _isSpeakerOn),
           ],
         ),
         const SizedBox(height: 40),

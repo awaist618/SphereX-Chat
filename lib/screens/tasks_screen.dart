@@ -53,8 +53,8 @@ class _TasksScreenState extends State<TasksScreen> {
 
     // 2. Background Sync Refresh
     Future.delayed(const Duration(seconds: 1), () async {
+      final syncedTasks = await ApiService.getTasks(_currentFilter);
       if (mounted) {
-        final syncedTasks = await ApiService.getTasks(_currentFilter);
         setState(() => _tasks = syncedTasks);
       }
     });
@@ -339,7 +339,19 @@ class _TasksScreenState extends State<TasksScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text("Update Status", style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text("Manage Task", style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+                  IconButton(
+                    icon: const Icon(Icons.edit_note_rounded, color: Color(0xFF2979FF)),
+                    onPressed: () {
+                      Navigator.pop(context);
+                      _editTask(task);
+                    },
+                  ),
+                ],
+              ),
               const SizedBox(height: 8),
               const Text("Select the current state of this task.", style: TextStyle(color: Colors.white38, fontSize: 14)),
               const SizedBox(height: 24),
@@ -364,6 +376,84 @@ class _TasksScreenState extends State<TasksScreen> {
               const SizedBox(height: 12),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  void _editTask(Map<String, dynamic> task) async {
+    final titleController = TextEditingController(text: task['title']);
+    final descController = TextEditingController(text: task['description']);
+    DateTime? dueDate = task['due_date'] != null ? DateTime.parse(task['due_date']) : null;
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          backgroundColor: const Color(0xFF16233A),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Text("Edit Task", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text("Title", style: TextStyle(color: Colors.white70, fontSize: 12)),
+                TextField(
+                  controller: titleController,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(hintText: "Task title...", hintStyle: TextStyle(color: Colors.white12)),
+                ),
+                const SizedBox(height: 20),
+                const Text("Description", style: TextStyle(color: Colors.white70, fontSize: 12)),
+                TextField(
+                  controller: descController,
+                  style: const TextStyle(color: Colors.white70, fontSize: 14),
+                  decoration: const InputDecoration(hintText: "Add details...", hintStyle: TextStyle(color: Colors.white12)),
+                ),
+                const SizedBox(height: 20),
+                const Text("Due Date", style: TextStyle(color: Colors.white70, fontSize: 12)),
+                const SizedBox(height: 8),
+                InkWell(
+                  onTap: () async {
+                    final picked = await showDatePicker(
+                      context: context,
+                      initialDate: dueDate ?? DateTime.now(),
+                      firstDate: DateTime.now(),
+                      lastDate: DateTime.now().add(const Duration(days: 365)),
+                    );
+                    if (picked != null) setDialogState(() => dueDate = picked);
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.05), borderRadius: BorderRadius.circular(8)),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.calendar_today, color: Color(0xFF2979FF), size: 18),
+                        const SizedBox(width: 10),
+                        Text(dueDate == null ? "Select Date" : DateFormat('MMM d, yyyy').format(dueDate!), style: const TextStyle(color: Colors.white)),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+            TextButton(
+              onPressed: () async {
+                await ApiService.updateTask(task['id'], {
+                  'title': titleController.text.trim(),
+                  'description': descController.text.trim(),
+                  'due_date': dueDate?.toIso8601String(),
+                });
+                Navigator.pop(context);
+                _loadTasks();
+              },
+              child: const Text("Save Changes", style: TextStyle(color: Color(0xFF2979FF))),
+            ),
+          ],
         ),
       ),
     );

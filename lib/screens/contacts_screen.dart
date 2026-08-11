@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import '../services/api_service.dart';
 import 'chat_screen.dart';
 
@@ -86,7 +87,16 @@ class _ContactsScreenState extends State<ContactsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text("Find Connection", style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text("Find Connection", style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+              IconButton(
+                icon: const Icon(Icons.qr_code_scanner_rounded, color: Color(0xFF2979FF)),
+                onPressed: _openScanner,
+              ),
+            ],
+          ),
           const SizedBox(height: 15),
           Container(
             decoration: BoxDecoration(
@@ -108,6 +118,37 @@ class _ContactsScreenState extends State<ContactsScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  void _openScanner() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.black,
+      builder: (context) => Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(
+          backgroundColor: Colors.black,
+          title: const Text("Scan QR", style: TextStyle(color: Colors.white)),
+          leading: IconButton(icon: const Icon(Icons.close, color: Colors.white), onPressed: () => Navigator.pop(context)),
+        ),
+        body: MobileScanner(
+          onDetect: (capture) {
+            final List<Barcode> barcodes = capture.barcodes;
+            for (final barcode in barcodes) {
+              final String? code = barcode.rawValue;
+              if (code != null && code.startsWith("spherex:")) {
+                final String username = code.split(":").last;
+                Navigator.pop(context);
+                _handleSearch(username);
+                _searchController.text = username;
+                return;
+              }
+            }
+          },
+        ),
       ),
     );
   }

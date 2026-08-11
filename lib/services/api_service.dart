@@ -23,6 +23,7 @@ class ApiService {
     }
     await _supabase.auth.signOut();
     await _storage.delete(key: 'username');
+    await LocalDbService.clearAll();
   }
 
   static Future<void> updateOnlineStatus(String username, bool isOnline) async {
@@ -45,6 +46,8 @@ class ApiService {
       );
       
       if (response.user != null) {
+        await LocalDbService.clearAll();
+        await _saveUsername(username);
         await _ensureProfileExists(response.user!.id, username, email);
       }
 
@@ -84,6 +87,7 @@ class ApiService {
       );
       
       if (response.user != null) {
+        await LocalDbService.clearAll();
         final username = response.user!.userMetadata?['username'] ?? email.split('@')[0];
         await _saveUsername(username);
         await _ensureProfileExists(response.user!.id, username, email);
@@ -103,6 +107,9 @@ class ApiService {
       );
       
       if (response.user != null) {
+        // Clear local data for the new session
+        await LocalDbService.clearAll();
+        
         final username = response.user!.userMetadata?['username'] ?? email.split('@')[0];
         await _saveUsername(username);
         await _ensureProfileExists(response.user!.id, username, email);
@@ -125,10 +132,18 @@ class ApiService {
 
   // PROFILE MANAGEMENT
   static Future<Map<String, dynamic>?> getProfile(String username) async {
+    // 1. Get from Local for speed
+    final localProfile = await LocalDbService.getProfile(username);
+    
+    // 2. background sync
+    _syncProfile(username);
+
+    if (localProfile != null) return localProfile;
+
     try {
       final data = await _supabase.from('profiles').select().eq('username', username).maybeSingle();
       if (data == null) return null;
-      return {
+      final profile = {
         'username': data['username'],
         'about': data['about'],
         'phone': data['phone'],
@@ -136,8 +151,28 @@ class ApiService {
         'isOnline': data['is_online'],
         'lastSeen': data['last_seen'],
       };
+      await LocalDbService.saveProfile(profile);
+      return profile;
     } catch (e) {
       return null;
+    }
+  }
+
+  static Future<void> _syncProfile(String username) async {
+    try {
+      final data = await _supabase.from('profiles').select().eq('username', username).maybeSingle();
+      if (data != null) {
+        await LocalDbService.saveProfile({
+          'username': data['username'],
+          'about': data['about'],
+          'phone': data['phone'],
+          'profilePic': data['avatar_url'],
+          'isOnline': data['is_online'],
+          'lastSeen': data['last_seen'],
+        });
+      }
+    } catch (e) {
+      print('Sync profile error: $e');
     }
   }
 
@@ -149,6 +184,38 @@ class ApiService {
       }).eq('username', username);
       return true;
     } catch (e) {
+      return false;
+    }
+  }
+
+  static Future<bool> isUsernameAvailable(String username) async {
+    try {
+      final res = await _supabase.from('profiles').select('username').eq('username', username.toLowerCase()).maybeSingle();
+      return res == null;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  static Future<bool> updateUsername(String oldUsername, String newUsername) async {
+    try {
+      final newUsernameLower = newUsername.toLowerCase();
+      // 1. Update Profile in Supabase
+      // Assuming 'profiles' table has 'username' as a unique field and 'id' as PK
+      // This will work if foreign keys are set to ON UPDATE CASCADE
+      await _supabase.from('profiles').update({
+        'username': newUsernameLower
+      }).eq('username', oldUsername);
+
+      // 2. Update Local Storage
+      await _saveUsername(newUsernameLower);
+
+      // 3. Clear Local DB to force resync with new username
+      await LocalDbService.clearAll();
+
+      return true;
+    } catch (e) {
+      print('Update username error: $e');
       return false;
     }
   }
@@ -186,21 +253,25 @@ class ApiService {
       final cleanQuery = query.replaceAll('@', '').trim();
       if (cleanQuery.isEmpty) return {'users': [], 'groups': [], 'messages': []};
 
-      // 1. Search Users
+      // 1. Search Users (Exact match to prevent discovery of random users)
       final List<dynamic> userData = await _supabase
           .from('profiles')
           .select()
-          .ilike('username', '%$cleanQuery%')
-          .limit(5);
+          .eq('username', cleanQuery)
+          .limit(1);
 
       List<Map<String, dynamic>> users = [];
       for (var user in userData) {
         if (user['username'] == myUsername) continue;
+        
+        final relationship = await _getRelationship(myUsername, user['username']);
+        
         users.add({
           'username': user['username'],
           'about': user['about'],
           'profilePic': user['avatar_url'],
           'isOnline': user['is_online'],
+          'relationship': relationship,
         });
       }
 
@@ -249,6 +320,11 @@ class ApiService {
   static Future<String> _getRelationship(String myUser, String otherUser) async {
     try {
       if (myUser.isEmpty) return 'none';
+      
+      // Check if blocked
+      final blocked = await _supabase.from('blocks').select().eq('blocker_id', myUser).eq('blocked_id', otherUser).maybeSingle();
+      if (blocked != null) return 'blocked';
+
       final contact = await _supabase.from('contacts').select().eq('user_id', myUser).eq('contact_id', otherUser).maybeSingle();
       if (contact != null) return 'contact';
 
@@ -314,14 +390,68 @@ class ApiService {
     }
   }
 
+  // BLOCKING & REPORTING
+  static Future<bool> blockUser(String otherUsername) async {
+    try {
+      final myUser = await getUsername();
+      if (myUser == null) return false;
+      
+      // We use a dedicated blocks table for better scalability and RLS
+      await _supabase.from('blocks').upsert({
+        'blocker_id': myUser,
+        'blocked_id': otherUsername
+      });
+      
+      // Also remove from contacts if they were contacts
+      await _supabase.from('contacts').delete().or('user_id.eq.$myUser,contact_id.eq.$myUser').or('user_id.eq.$otherUsername,contact_id.eq.$otherUsername');
+      
+      return true;
+    } catch (e) {
+      print('Block user error: $e');
+      return false;
+    }
+  }
+
+  static Future<bool> reportUser(String otherUsername, String reason) async {
+    try {
+      final myUser = await getUsername();
+      if (myUser == null) return false;
+      await _supabase.from('notifications').insert({
+        'user_id': 'admin', // System/Admin user
+        'sender_id': myUser,
+        'type': 'report',
+        'title': 'User Reported: @$otherUsername',
+        'body': 'Reason: $reason',
+        'reference_id': otherUsername,
+      });
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   // MESSAGING & CONVERSATIONS
   static Future<bool> sendMessage(String sender, String receiver, String text, {Uint8List? fileBytes, String? fileName, String type = 'text', String? replyTo, String? groupId}) async {
     try {
+      // 1. Group Admin Message Only Check
+      if (groupId != null) {
+        final group = await _supabase.from('groups').select('only_admins_message').eq('id', groupId).single();
+        if (group['only_admins_message'] == true) {
+          final member = await _supabase.from('group_members').select('role').match({'group_id': groupId, 'user_id': sender}).single();
+          if (member['role'] != 'admin') return false;
+        }
+      } else {
+        // 2. Block Check (Direct Chat Only)
+        final blocked = await _supabase.from('blocks').select().eq('blocker_id', receiver).eq('blocked_id', sender).maybeSingle();
+        if (blocked != null) return false;
+      }
+
       String? fileUrl;
       if (fileBytes != null && fileName != null) {
         String folder = 'chat_media';
         if (type == 'audio') folder = 'voice_messages';
         if (type == 'file') folder = 'documents';
+        if (type == 'video_note') folder = 'video_notes';
 
         final path = '$folder/${DateTime.now().millisecondsSinceEpoch}_$fileName';
         await _supabase.storage.from('spherex').uploadBinary(path, fileBytes);
@@ -396,7 +526,66 @@ class ApiService {
 
   static Future<bool> deleteMessage(String messageId) async {
     try {
-      await _supabase.from('messages').delete().eq('id', messageId);
+      await _supabase.from('messages').update({
+        'content': null,
+        'file_url': null,
+        'file_name': null,
+        'type': 'system',
+        'is_deleted': true,
+      }).eq('id', messageId);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  static Future<bool> deleteMessageForMe(String messageId) async {
+    try {
+      final myUser = await getUsername();
+      if (myUser == null) return false;
+      
+      await _supabase.rpc('append_to_array_unique', params: {
+        'table_name': 'messages',
+        'column_name': 'deleted_for',
+        'new_element': myUser,
+        'row_id': messageId
+      });
+      await LocalDbService.markAsDeletedForMe(messageId.toString(), myUser);
+      return true;
+    } catch (e) {
+      print('Delete for me error: $e');
+      return false;
+    }
+  }
+
+  static Future<bool> leaveGroup(String groupId) async {
+    try {
+      final myUser = await getUsername();
+      if (myUser == null) return false;
+      await _supabase.from('group_members').delete().match({
+        'group_id': groupId,
+        'user_id': myUser
+      });
+      return true;
+    } catch (e) {
+      print('Leave group error: $e');
+      return false;
+    }
+  }
+
+  static Future<bool> deleteGroup(String groupId) async {
+    try {
+      await _supabase.from('groups').delete().eq('id', groupId);
+      return true;
+    } catch (e) {
+      print('Delete group error: $e');
+      return false;
+    }
+  }
+
+  static Future<bool> updateTask(String taskId, Map<String, dynamic> updates) async {
+    try {
+      await _supabase.from('tasks').update(updates).eq('id', taskId);
       return true;
     } catch (e) {
       return false;
@@ -424,8 +613,14 @@ class ApiService {
     }
   }
 
-  static Future<void> markMessagesAsRead(String myUsername, String otherUsername) async {
+  static Future<void> markMessagesAsRead(String myUsername, String otherUsername, {String? groupId}) async {
     try {
+      if (groupId != null) {
+        // Mark group messages as read for me? 
+        // Usually groups don't have a single 'is_read' flag per message for everyone
+        // but we can mark them locally.
+        return;
+      }
       final convId = getConversationId(myUsername, otherUsername);
       await _supabase
           .from('messages')
@@ -443,6 +638,7 @@ class ApiService {
   }
 
   static Future<List<Map<String, dynamic>>> getMessages(String user1, String user2, {String? groupId}) async {
+    final myUser = await getUsername();
     final convId = groupId == null ? getConversationId(user1, user2) : null;
     
     // 1. Get from Local DB for fast load
@@ -452,30 +648,48 @@ class ApiService {
     _syncMessages(user1, user2, groupId: groupId);
 
     if (localMessages.isNotEmpty) {
-      return List<Map<String, dynamic>>.from(localMessages.map((m) => _mapLocalMessage(m, user1)));
+      return List<Map<String, dynamic>>.from(
+        localMessages
+          .map((m) => _mapLocalMessage(m, user1))
+          .where((m) => !(m['deleted_for'] as List).contains(myUser))
+      );
     }
 
     // If local is empty, wait for network (first time load)
     try {
+      List<dynamic> data;
       if (groupId != null) {
-        final List<dynamic> data = await _supabase
+        data = await _supabase
             .from('messages')
             .select()
             .eq('group_id', groupId)
             .order('created_at', ascending: true);
-        
-        await _saveMessagesLocally(data);
-        return List<Map<String, dynamic>>.from(data.map((m) => _mapMessage(m, user1)));
       } else {
-        final List<dynamic> data = await _supabase
+        data = await _supabase
             .from('messages')
             .select()
             .eq('conversation_id', convId!)
             .order('created_at', ascending: true);
-            
-        await _saveMessagesLocally(data);
-        return List<Map<String, dynamic>>.from(data.map((m) => _mapMessage(m, user1)));
       }
+      
+      await _saveMessagesLocally(data);
+      
+      // Fetch reactions for these messages
+      final ids = data.map((m) => m['id']).toList();
+      final reactionsRes = await _supabase.from('message_reactions').select().inFilter('message_id', ids);
+      final reactions = List<Map<String, dynamic>>.from(reactionsRes);
+
+      return List<Map<String, dynamic>>.from(
+        data
+          .where((m) => m['deleted_for'] == null || !(m['deleted_for'] as List).contains(myUser))
+          .map((m) {
+            final mReactions = reactions.where((r) => r['message_id'] == m['id']).toList();
+            return {
+              ..._mapMessage(m, user1),
+              'reactions': mReactions,
+            };
+          })
+      );
     } catch (e) {
       return [];
     }
@@ -511,12 +725,28 @@ class ApiService {
       'reply_to': m['reply_to'],
       'is_read': m['is_read'] == true ? 1 : 0,
       'is_edited': m['is_edited'] == true ? 1 : 0,
+      'is_deleted': m['is_deleted'] == true ? 1 : 0,
+      'deleted_for': m['deleted_for']?.toString(),
       'created_at': m['created_at'],
     }).toList();
     await LocalDbService.saveItems('messages', localData);
+
+    // Also fetch and save reactions in batch
+    if (messages.isNotEmpty) {
+      final ids = messages.map((m) => m['id']).toList();
+      final reactionsRes = await _supabase.from('message_reactions').select().inFilter('message_id', ids);
+      if (reactionsRes != null) {
+        await LocalDbService.saveItems('message_reactions', List<Map<String, dynamic>>.from(reactionsRes));
+      }
+    }
   }
 
   static Map<String, dynamic> _mapLocalMessage(Map<String, dynamic> m, String myUser) {
+    List<String> deletedFor = [];
+    if (m['deleted_for'] != null && m['deleted_for'].toString().isNotEmpty) {
+      deletedFor = m['deleted_for'].toString().replaceAll('[', '').replaceAll(']', '').split(',').map((e) => e.trim()).toList();
+    }
+    
     return {
       'id': m['id'],
       'sender': m['sender_id'],
@@ -529,7 +759,10 @@ class ApiService {
       'reply_to': m['reply_to'],
       'is_read': m['is_read'] == 1,
       'is_edited': m['is_edited'] == 1,
+      'is_deleted': m['is_deleted'] == 1,
       'isMe': m['sender_id'] == myUser,
+      'deleted_for': deletedFor,
+      'reactions': m['reactions'] ?? [],
     };
   }
 
@@ -546,7 +779,9 @@ class ApiService {
       'reply_to': m['reply_to'],
       'is_read': m['is_read'],
       'is_edited': m['is_edited'],
+      'is_deleted': m['is_deleted'] == true,
       'isMe': m['sender_id'] == myUser,
+      'deleted_for': m['deleted_for'],
     };
   }
 
@@ -560,15 +795,18 @@ class ApiService {
     if (localConvs.isNotEmpty) {
       return localConvs.map((c) => {
         '_id': c['other_user'],
+        'groupId': c['group_id'],
         'lastMessage': c['last_message'],
         'timestamp': c['updated_at'],
         'profilePic': c['profile_pic'],
         'isOnline': c['is_online'] == 1,
-        'unreadCount': c['unread_count']
+        'unreadCount': c['unread_count'],
+        'isGroup': c['is_group'] == 1,
       }).toList();
     }
 
     try {
+      // Fetch Direct Conversations
       final List<dynamic> data = await _supabase
           .from('conversations')
           .select()
@@ -577,7 +815,10 @@ class ApiService {
       
       List<Map<String, dynamic>> results = [];
       for (var conv in data) {
-        final otherUser = (conv['participants'] as List).firstWhere((p) => p != username);
+        final participants = conv['participants'] as List;
+        final otherUser = participants.firstWhere((p) => p != username, orElse: () => null);
+        if (otherUser == null) continue;
+
         final profile = await getProfile(otherUser);
         
         final List<dynamic> unreadCountRes = await _supabase
@@ -595,19 +836,56 @@ class ApiService {
           'timestamp': conv['updated_at'],
           'profilePic': profile?['profilePic'],
           'isOnline': profile?['isOnline'],
-          'unreadCount': unreadCount
+          'unreadCount': unreadCount,
+          'isGroup': false,
         });
       }
+
+      // Fetch Groups
+      final myGroups = await getMyGroups();
+      for (var group in myGroups) {
+        final List<dynamic> lastMsgRes = await _supabase
+            .from('messages')
+            .select()
+            .eq('group_id', group['id'])
+            .order('created_at', ascending: false)
+            .limit(1);
+        
+        String lastMsg = "No messages yet";
+        String timestamp = group['created_at'];
+        
+        if (lastMsgRes.isNotEmpty) {
+          final m = lastMsgRes.first;
+          lastMsg = m['type'] == 'image' ? "📷 Photo" : (m['type'] == 'audio' ? "🎤 Voice Message" : (m['content'] ?? "Media"));
+          timestamp = m['created_at'];
+        }
+
+        results.add({
+          '_id': group['name'],
+          'groupId': group['id'],
+          'lastMessage': lastMsg,
+          'timestamp': timestamp,
+          'profilePic': group['avatar_url'],
+          'isOnline': false,
+          'unreadCount': 0, // Simplified for now
+          'isGroup': true,
+        });
+      }
+
+      // Sort by timestamp
+      results.sort((a, b) => DateTime.parse(b['timestamp']).compareTo(DateTime.parse(a['timestamp'])));
 
       await _saveConversationsLocally(results);
       return results;
     } catch (e) {
+      print('Get conversations error: $e');
       return [];
     }
   }
 
   static Future<void> _syncConversations(String username) async {
     try {
+      // Direct Chats
       final List<dynamic> data = await _supabase
           .from('conversations')
           .select()
@@ -616,7 +894,10 @@ class ApiService {
       
       List<Map<String, dynamic>> results = [];
       for (var conv in data) {
-        final otherUser = (conv['participants'] as List).firstWhere((p) => p != username);
+        final participants = conv['participants'] as List;
+        final otherUser = participants.firstWhere((p) => p != username, orElse: () => null);
+        if (otherUser == null) continue;
+
         final profile = await getProfile(otherUser);
         final List<dynamic> unreadCountRes = await _supabase
             .from('messages')
@@ -630,9 +911,44 @@ class ApiService {
           'timestamp': conv['updated_at'],
           'profilePic': profile?['profilePic'],
           'isOnline': profile?['isOnline'],
-          'unreadCount': unreadCountRes.length
+          'unreadCount': unreadCountRes.length,
+          'isGroup': false,
+          'groupId': null
         });
       }
+
+      // Groups
+      final myGroups = await getMyGroups();
+      for (var group in myGroups) {
+        final List<dynamic> lastMsgRes = await _supabase
+            .from('messages')
+            .select()
+            .eq('group_id', group['id'])
+            .order('created_at', ascending: false)
+            .limit(1);
+        
+        String lastMsg = "No messages yet";
+        String timestamp = group['created_at'];
+        
+        if (lastMsgRes.isNotEmpty) {
+          final m = lastMsgRes.first;
+          lastMsg = m['type'] == 'image' ? "📷 Photo" : (m['type'] == 'audio' ? "🎤 Voice Message" : (m['content'] ?? "Media"));
+          timestamp = m['created_at'];
+        }
+
+        results.add({
+          '_id': group['name'],
+          'groupId': group['id'],
+          'lastMessage': lastMsg,
+          'timestamp': timestamp,
+          'profilePic': group['avatar_url'],
+          'isOnline': false,
+          'unreadCount': 0,
+          'isGroup': true,
+        });
+      }
+
+      results.sort((a, b) => DateTime.parse(b['timestamp']).compareTo(DateTime.parse(a['timestamp'])));
       await _saveConversationsLocally(results);
     } catch (e) {
       print('Sync conversations error: $e');
@@ -641,13 +957,15 @@ class ApiService {
 
   static Future<void> _saveConversationsLocally(List<Map<String, dynamic>> convs) async {
     final localData = convs.map((c) => {
-      'id': c['_id'], // Using other_user as ID for simplicity
+      'id': c['isGroup'] == true ? c['groupId'] : c['_id'],
       'last_message': c['lastMessage'],
       'updated_at': c['timestamp'],
       'other_user': c['_id'],
       'profile_pic': c['profilePic'],
       'is_online': c['isOnline'] == true ? 1 : 0,
-      'unread_count': c['unreadCount']
+      'unread_count': c['unreadCount'],
+      'is_group': c['isGroup'] == true ? 1 : 0,
+      'group_id': c['groupId']
     }).toList();
     await LocalDbService.saveItems('conversations', localData);
   }
@@ -661,7 +979,8 @@ class ApiService {
       final res = await _supabase.from('groups').insert({
         'name': name,
         'description': description,
-        'created_by': myUser
+        'created_by': myUser,
+        'only_admins_message': false,
       }).select().single();
 
       final groupId = res['id'];
@@ -675,7 +994,9 @@ class ApiService {
 
       await _supabase.from('group_members').insert(memberInserts);
       return groupId;
-    } catch (e) {
+    } catch (e, stack) {
+      print('Create group error: $e');
+      print(stack);
       return null;
     }
   }
@@ -870,9 +1191,49 @@ class ApiService {
       } else if (status == 'ended' || status == 'rejected' || status == 'cancelled') {
         data['ended_at'] = DateTime.now().toIso8601String();
       }
-      await _supabase.from('calls').update(data).eq('id', callId);
+      
+      final res = await _supabase.from('calls').update(data).eq('id', callId).select().single();
+      
+      // Trigger Missed Call Notification
+      if (status == 'cancelled' || status == 'rejected') {
+        final bool answered = res['answered_at'] != null;
+        if (!answered) {
+          await createNotification(
+            userId: res['receiver_id'],
+            type: 'missed_call',
+            title: 'Missed ${res['type']} call',
+            body: 'From @${res['caller_id']}',
+            referenceId: callId,
+          );
+        }
+      }
     } catch (e) {
       print('Update call status error: $e');
+    }
+  }
+
+  static Future<Map<String, dynamic>?> getCallDetails(String callId) async {
+    // Fetch detailed call info including profile data
+    try {
+      final data = await _supabase
+          .from('calls')
+          .select('*, caller:profiles!calls_caller_id_fkey(*), receiver:profiles!calls_receiver_id_fkey(*)')
+          .eq('id', callId)
+          .single();
+      
+      final myUser = await getUsername();
+      final bool isOutgoing = data['caller_id'] == myUser;
+      final profile = isOutgoing ? data['receiver'] : data['caller'];
+
+      return {
+        ...data,
+        'isOutgoing': isOutgoing,
+        'otherUser': profile['username'],
+        'profilePic': profile['avatar_url'],
+      };
+    } catch (e) {
+      print('Error fetching call details: $e');
+      return null;
     }
   }
 
@@ -887,16 +1248,17 @@ class ApiService {
           .or('caller_id.eq.$myUser,receiver_id.eq.$myUser')
           .order('created_at', ascending: false);
       
-      final List<Map<String, dynamic>> results = List<Map<String, dynamic>>.from(data.map((call) {
-        final bool isOutgoing = call['caller_id'] == myUser;
-        final profile = isOutgoing ? call['receiver'] : call['caller'];
+      final List<Map<String, dynamic>> results = data.map((call) {
+        final item = Map<String, dynamic>.from(call);
+        final bool isOutgoing = item['caller_id'] == myUser;
+        final profile = isOutgoing ? item['receiver'] : item['caller'];
         return {
-          ...call,
+          ...item,
           'isOutgoing': isOutgoing,
           'otherUser': profile['username'],
           'profilePic': profile['avatar_url'],
         };
-      }));
+      }).toList().cast<Map<String, dynamic>>();
       return results;
     } catch (e) {
       print('Get call history error: $e');
@@ -919,9 +1281,15 @@ class ApiService {
               value: groupId,
             ),
             callback: (payload) {
-            final record = payload.newRecord;
-            _saveMessagesLocally([record]);
-            callback(record);
+            if (payload.eventType == PostgresChangeEvent.delete) {
+              final oldId = payload.oldRecord['id'];
+              LocalDbService.deleteItem('messages', oldId.toString());
+              callback({'id': oldId, 'action': 'delete'});
+            } else {
+              final record = payload.newRecord;
+              _saveMessagesLocally([record]);
+              callback(record);
+            }
           },
           )
           .subscribe();
@@ -940,9 +1308,15 @@ class ApiService {
             value: convId,
           ),
           callback: (payload) {
-            final record = payload.newRecord;
-            _saveMessagesLocally([record]);
-            callback(record);
+            if (payload.eventType == PostgresChangeEvent.delete) {
+              final oldId = payload.oldRecord['id'];
+              LocalDbService.deleteItem('messages', oldId.toString());
+              callback({'id': oldId, 'action': 'delete'});
+            } else {
+              final record = payload.newRecord;
+              _saveMessagesLocally([record]);
+              callback(record);
+            }
           },
         )
         .subscribe();
@@ -972,9 +1346,15 @@ class ApiService {
           table: 'messages',
           filter: filter,
           callback: (payload) {
-            final record = payload.newRecord;
-            _saveMessagesLocally([record]);
-            callback(record);
+            if (payload.eventType == PostgresChangeEvent.delete) {
+              final oldId = payload.oldRecord['id'];
+              LocalDbService.deleteItem('messages', oldId.toString());
+              callback({'id': oldId, 'action': 'delete'});
+            } else {
+              final record = payload.newRecord;
+              _saveMessagesLocally([record]);
+              callback(record);
+            }
           },
         )
         .subscribe();
@@ -993,9 +1373,15 @@ class ApiService {
             value: username,
           ),
           callback: (payload) {
-            final record = payload.newRecord;
-            _saveMessagesLocally([record]);
-            callback(record);
+            if (payload.eventType == PostgresChangeEvent.delete) {
+              final oldId = payload.oldRecord['id'];
+              LocalDbService.deleteItem('messages', oldId.toString());
+              callback({'id': oldId, 'action': 'delete'});
+            } else {
+              final record = payload.newRecord;
+              _saveMessagesLocally([record]);
+              callback(record);
+            }
           },
         )
         .subscribe();
@@ -1098,6 +1484,31 @@ class ApiService {
     }
   }
 
+  static Future<void> markAllNotificationsAsRead() async {
+    try {
+      final myUser = await getUsername();
+      if (myUser != null) {
+        await _supabase
+            .from('notifications')
+            .update({'is_read': true})
+            .eq('user_id', myUser)
+            .eq('is_read', false);
+      }
+    } catch (e) {
+      print('Mark all notifications read error: $e');
+    }
+  }
+
+  static Future<bool> deleteNotification(String id) async {
+    try {
+      await _supabase.from('notifications').delete().eq('id', id);
+      return true;
+    } catch (e) {
+      print('Delete notification error: $e');
+      return false;
+    }
+  }
+
   // GROUP MANAGEMENT ADVANCED
   static Future<int> getGroupMemberCount(String groupId) async {
     try {
@@ -1169,6 +1580,32 @@ class ApiService {
     }
   }
 
+  static Future<bool> updateGroupSettings(String groupId, Map<String, dynamic> settings) async {
+    try {
+      await _supabase.from('groups').update(settings).eq('id', groupId);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  static Future<bool> pinMessage(String messageId, bool isPinned) async {
+    try {
+      await _supabase.from('messages').update({'is_pinned': isPinned}).eq('id', messageId);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  static Future<Map<String, dynamic>?> getGroupDetails(String groupId) async {
+    try {
+      return await _supabase.from('groups').select().eq('id', groupId).single();
+    } catch (e) {
+      return null;
+    }
+  }
+
   // CONTACTS FETCH
   static Future<List<Map<String, dynamic>>> getMyContacts() async {
     try {
@@ -1177,18 +1614,19 @@ class ApiService {
       
       final List<dynamic> data = await _supabase
           .from('contacts')
-          .select('contact_id, profiles!contacts_contact_id_fkey(*)')
+          .select('contact_id, profiles(*)')
           .eq('user_id', myUser);
       
-      return List<Map<String, dynamic>>.from(data.map((c) {
-        final profile = c['profiles'] as Map<String, dynamic>;
+      return data.map((c) {
+        final item = Map<String, dynamic>.from(c);
+        final profile = item['profiles'] as Map<String, dynamic>;
         return {
           'username': profile['username'],
           'profilePic': profile['avatar_url'],
           'isOnline': profile['is_online'],
           'about': profile['about'],
         };
-      }));
+      }).toList();
     } catch (e) {
       print('Get contacts error: $e');
       return [];
@@ -1197,7 +1635,18 @@ class ApiService {
 
   static Future<bool> deleteAccount(String username) async {
     try {
+      // 1. Remove from all groups
+      await _supabase.from('group_members').delete().eq('user_id', username);
+      
+      // 2. Delete messages (as sender)
+      await _supabase.from('messages').delete().eq('sender_id', username);
+      
+      // 3. Clear local DB
+      await LocalDbService.clearAll();
+
+      // 4. Delete Profile
       await _supabase.from('profiles').delete().eq('username', username);
+
       await logout();
       return true;
     } catch (e) {

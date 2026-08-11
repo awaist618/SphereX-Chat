@@ -122,14 +122,14 @@ class _LoginScreenState extends State<LoginScreen> {
                       ElevatedButton(
                         onPressed: _isLoading ? null : _handleLogin,
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF7C4DFF),
+                          backgroundColor: const Color(0xFF2979FF),
                           foregroundColor: Colors.white,
                           padding: const EdgeInsets.symmetric(vertical: 16),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12),
                           ),
                           elevation: 5,
-                          shadowColor: const Color(0xFF7C4DFF).withValues(alpha: 0.5),
+                          shadowColor: const Color(0xFF2979FF).withValues(alpha: 0.5),
                         ),
                         child: _isLoading 
                           ? const CircularProgressIndicator(color: Colors.white)
@@ -182,7 +182,7 @@ class _LoginScreenState extends State<LoginScreen> {
     return InputDecoration(
       labelText: label,
       labelStyle: const TextStyle(color: Colors.white70),
-      prefixIcon: Icon(icon, color: const Color(0xFF7C4DFF)),
+      prefixIcon: Icon(icon, color: const Color(0xFF2979FF)),
       suffixIcon: suffixIcon,
       filled: true,
       fillColor: Colors.white.withValues(alpha: 0.05),
@@ -279,7 +279,7 @@ class _LoginScreenState extends State<LoginScreen> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF161B33),
+        backgroundColor: const Color(0xFF0A2540),
         title: const Text("Reset Password", style: TextStyle(color: Colors.white)),
         content: Column(
           mainAxisSize: MainAxisSize.min,

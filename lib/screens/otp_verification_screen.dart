@@ -105,7 +105,7 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
                   ElevatedButton(
                     onPressed: _isLoading ? null : _verifyCode,
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF7C4DFF),
+                      backgroundColor: const Color(0xFF2979FF),
                       foregroundColor: Colors.white,
                       minimumSize: const Size(double.infinity, 56),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -121,7 +121,7 @@ class _OtpVerificationScreenState extends State<OtpVerificationScreen> {
                     child: Text(
                       _resendTimer == 0 ? "Resend Code" : "Resend in ${_resendTimer}s",
                       style: TextStyle(
-                        color: _resendTimer == 0 ? const Color(0xFF7C4DFF) : Colors.white38,
+                        color: _resendTimer == 0 ? const Color(0xFF2979FF) : Colors.white38,
                       ),
                     ),
                   ),

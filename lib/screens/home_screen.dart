@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'dart:ui';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
 import '../services/api_service.dart';
@@ -11,6 +12,8 @@ import 'tasks_screen.dart';
 import 'groups_screen.dart';
 import 'notifications_screen.dart';
 import 'calls_history_screen.dart';
+import 'login_screen.dart';
+import 'contact_profile_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -23,17 +26,20 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   int _selectedIndex = 0;
   String? _myUsername;
   RealtimeChannel? _globalSignalingChannel;
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  final FocusNode _searchFocusNode = FocusNode();
 
-  final List<Widget> _tabs = [
-    const HomeScreenContent(),
-    const ContactsScreen(),
-    const NotificationsScreen(),
-    const ProfileScreen(),
-  ];
+  late final List<Widget> _tabs;
 
   @override
   void initState() {
     super.initState();
+    _tabs = [
+      HomeScreenContent(scaffoldKey: _scaffoldKey, searchFocusNode: _searchFocusNode),
+      const ContactsScreen(),
+      const NotificationsScreen(),
+      const ProfileScreen(),
+    ];
     WidgetsBinding.instance.addObserver(this);
     _loadMyUsername();
   }
@@ -82,37 +88,211 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     if (_globalSignalingChannel != null) {
       Supabase.instance.client.removeChannel(_globalSignalingChannel!);
     }
+    _searchFocusNode.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  Widget _buildDrawer() {
+    return Drawer(
+      backgroundColor: const Color(0xFF0A2540),
+      child: SafeArea(
+        child: Column(
+          children: [
+            const SizedBox(height: 50),
+            // Improved Avatar Section
+            Stack(
+              alignment: Alignment.center,
+              children: [
+                Container(
+                  width: 100,
+                  height: 100,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(color: const Color(0xFF2979FF), width: 2),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFF2979FF).withValues(alpha: 0.2),
+                        blurRadius: 15,
+                        spreadRadius: 2,
+                      )
+                    ],
+                  ),
+                ),
+                const Icon(Icons.person, size: 60, color: Colors.white),
+              ],
+            ),
+            const SizedBox(height: 20),
+            Text(
+              _myUsername != null ? "@$_myUsername" : "User",
+              style: const TextStyle(
+                color: Colors.white, 
+                fontSize: 22, 
+                fontWeight: FontWeight.w900,
+                letterSpacing: 0.5,
+              ),
+            ),
+            const SizedBox(height: 60),
+            // Menu Items
+            _buildDrawerItem(Icons.settings_outlined, "Settings", () {}),
+            const SizedBox(height: 10),
+            _buildDrawerItem(Icons.privacy_tip_outlined, "Privacy", () {}),
+            const SizedBox(height: 10),
+            _buildDrawerItem(Icons.help_outline_rounded, "Help & Support", () {}),
+            
+            const Spacer(),
+            
+            // Logout Button at Bottom
+            Padding(
+              padding: const EdgeInsets.only(bottom: 30, left: 20),
+              child: InkWell(
+                onTap: () async {
+                  await ApiService.logout();
+                  if (mounted) {
+                    Navigator.of(context).pushAndRemoveUntil(
+                      MaterialPageRoute(builder: (context) => const LoginScreen()), 
+                      (route) => false
+                    );
+                  }
+                },
+                child: const Row(
+                  children: [
+                    Icon(Icons.logout_rounded, color: Color(0xFFFF4C61), size: 24),
+                    SizedBox(width: 15),
+                    Text(
+                      "Logout",
+                      style: TextStyle(
+                        color: Color(0xFFFF4C61), 
+                        fontSize: 16, 
+                        fontWeight: FontWeight.w700
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDrawerItem(IconData icon, String title, VoidCallback onTap) {
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 30),
+      leading: Icon(icon, color: Colors.white70, size: 24),
+      title: Text(
+        title, 
+        style: const TextStyle(
+          color: Colors.white, 
+          fontSize: 16, 
+          fontWeight: FontWeight.w500
+        )
+      ),
+      onTap: onTap,
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      key: _scaffoldKey,
+      extendBody: true,
       backgroundColor: const Color(0xFF0F1B2D),
+      drawer: _buildDrawer(),
       body: _tabs[_selectedIndex],
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _selectedIndex,
-        onTap: (index) => setState(() => _selectedIndex = index),
-        backgroundColor: const Color(0xFF0A2540),
-        selectedItemColor: const Color(0xFF2979FF),
-        unselectedItemColor: Colors.white38,
-        type: BottomNavigationBarType.fixed,
-        showSelectedLabels: true,
-        showUnselectedLabels: true,
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.home), label: "Home"),
-          BottomNavigationBarItem(icon: Icon(Icons.person_outline), label: "Contacts"),
-          BottomNavigationBarItem(icon: Icon(Icons.notifications_none), label: "Notifications"),
-          BottomNavigationBarItem(icon: Icon(Icons.account_circle_outlined), label: "Profile"),
-        ],
+      bottomNavigationBar: Container(
+        margin: const EdgeInsets.fromLTRB(20, 0, 20, 25),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(35),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.3),
+              blurRadius: 20,
+              offset: const Offset(0, 10),
+            ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(35),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+            child: Container(
+              height: 80,
+              decoration: BoxDecoration(
+                color: const Color(0xFF0A2540).withValues(alpha: 0.5),
+                borderRadius: BorderRadius.circular(35),
+                border: Border.all(
+                  color: Colors.white.withValues(alpha: 0.1),
+                  width: 1.5,
+                ),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  _buildNavItem(Icons.home_rounded, Icons.home_outlined, 0),
+                  _buildNavItem(Icons.person_rounded, Icons.person_outline, 1),
+                  _buildNavItem(Icons.notifications_rounded, Icons.notifications_none_rounded, 2),
+                  _buildNavItem(Icons.account_circle_rounded, Icons.account_circle_outlined, 3),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNavItem(IconData activeIcon, IconData inactiveIcon, int index) {
+    bool isSelected = _selectedIndex == index;
+    return Expanded(
+      child: GestureDetector(
+        onTap: () => setState(() => _selectedIndex = index),
+        behavior: HitTestBehavior.opaque,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 300),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: isSelected ? const Color(0xFF2979FF).withValues(alpha: 0.1) : Colors.transparent,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                isSelected ? activeIcon : inactiveIcon, 
+                size: 26, 
+                color: isSelected ? const Color(0xFF2979FF) : Colors.white38
+              ),
+            ),
+            const SizedBox(height: 4),
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 300),
+              height: 4,
+              width: isSelected ? 4 : 0,
+              decoration: BoxDecoration(
+                color: const Color(0xFF2979FF),
+                shape: BoxShape.circle,
+                boxShadow: isSelected ? [
+                  BoxShadow(
+                    color: const Color(0xFF2979FF).withValues(alpha: 0.6),
+                    blurRadius: 8,
+                    spreadRadius: 2,
+                  )
+                ] : [],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
 class HomeScreenContent extends StatefulWidget {
-  const HomeScreenContent({super.key});
+  final GlobalKey<ScaffoldState> scaffoldKey;
+  final FocusNode searchFocusNode;
+  const HomeScreenContent({super.key, required this.scaffoldKey, required this.searchFocusNode});
 
   @override
   State<HomeScreenContent> createState() => _HomeScreenContentState();
@@ -232,14 +412,20 @@ class _HomeScreenContentState extends State<HomeScreenContent> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          IconButton(icon: const Icon(Icons.menu, color: Colors.white70), onPressed: () {}),
+          IconButton(
+            icon: const Icon(Icons.menu, color: Colors.white70), 
+            onPressed: () => widget.scaffoldKey.currentState?.openDrawer()
+          ),
           Column(
             children: [
               const Text("SphereX", style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
               Text("Smart Communication", style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12)),
             ],
           ),
-          IconButton(icon: const Icon(Icons.search, color: Colors.white70), onPressed: () {}),
+          IconButton(
+            icon: const Icon(Icons.search, color: Colors.white70), 
+            onPressed: () => widget.searchFocusNode.requestFocus()
+          ),
         ],
       ),
     );
@@ -256,6 +442,7 @@ class _HomeScreenContentState extends State<HomeScreenContent> {
         ),
         child: TextField(
           controller: _searchController,
+          focusNode: widget.searchFocusNode,
           onChanged: _handleSearch,
           style: const TextStyle(color: Colors.white, fontSize: 15),
           decoration: InputDecoration(
@@ -319,7 +506,7 @@ class _HomeScreenContentState extends State<HomeScreenContent> {
   Widget _buildConversationList() {
     return ListView.builder(
       itemCount: _conversations.length,
-      padding: const EdgeInsets.symmetric(horizontal: 10),
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 100),
       itemBuilder: (context, index) {
         final conv = _conversations[index];
         final otherUser = conv['_id'];
@@ -327,33 +514,76 @@ class _HomeScreenContentState extends State<HomeScreenContent> {
         final profilePic = conv['profilePic'];
         final isOnline = conv['isOnline'] ?? false;
         
-        return ListTile(
-          contentPadding: const EdgeInsets.symmetric(horizontal: 15, vertical: 5),
-          onTap: () async {
-            await Navigator.of(context).push(MaterialPageRoute(builder: (context) => ChatScreen(username: otherUser)));
-            _loadConversations();
-          },
-          leading: Stack(
-            children: [
-              CircleAvatar(radius: 28, backgroundColor: const Color(0xFF16233A), backgroundImage: profilePic != null ? NetworkImage(profilePic) : null, child: profilePic == null ? Text(otherUser[0].toUpperCase(), style: const TextStyle(color: Colors.white, fontSize: 20)) : null),
-              if (isOnline) Positioned(right: 2, bottom: 2, child: Container(width: 14, height: 14, decoration: BoxDecoration(color: const Color(0xFF00C48C), shape: BoxShape.circle, border: Border.all(color: const Color(0xFF0F1B2D), width: 2)))),
-            ],
-          ),
-          title: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(otherUser, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
-              Text(DateFormat('h:mm a').format(DateTime.parse(conv['timestamp'])), style: const TextStyle(color: Colors.white38, fontSize: 12)),
-            ],
-          ),
-          subtitle: Padding(
-            padding: const EdgeInsets.only(top: 5),
-            child: Row(
+        return Material(
+          color: Colors.transparent,
+          child: ListTile(
+            contentPadding: const EdgeInsets.symmetric(horizontal: 15, vertical: 5),
+            onTap: () async {
+              await Navigator.of(context).push(MaterialPageRoute(builder: (context) => ChatScreen(
+                username: otherUser,
+                groupId: conv['groupId'],
+              )));
+              _loadConversations();
+            },
+            leading: Stack(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(2),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: conv['isGroup'] == true ? const Color(0xFF2979FF).withValues(alpha: 0.3) : Colors.transparent,
+                      width: 1.5,
+                    ),
+                  ),
+                  child: CircleAvatar(
+                    radius: 26, 
+                    backgroundColor: const Color(0xFF16233A), 
+                    backgroundImage: profilePic != null ? NetworkImage(profilePic) : null, 
+                    child: profilePic == null 
+                      ? Icon(conv['isGroup'] == true ? Icons.groups_rounded : Icons.person_rounded, color: Colors.white24, size: 28) 
+                      : null
+                  ),
+                ),
+                if (isOnline && conv['isGroup'] != true) Positioned(right: 2, bottom: 2, child: Container(width: 14, height: 14, decoration: BoxDecoration(color: const Color(0xFF00C48C), shape: BoxShape.circle, border: Border.all(color: const Color(0xFF0F1B2D), width: 2)))),
+              ],
+            ),
+            title: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Expanded(child: Text(lastMsg, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: (conv['unreadCount'] ?? 0) > 0 ? Colors.white : Colors.white38, fontSize: 14, fontWeight: (conv['unreadCount'] ?? 0) > 0 ? FontWeight.bold : FontWeight.normal))),
-                if ((conv['unreadCount'] ?? 0) > 0) Container(padding: const EdgeInsets.all(6), decoration: const BoxDecoration(color: Color(0xFF2979FF), shape: BoxShape.circle), child: Text("${conv['unreadCount']}", style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold))),
+                Expanded(
+                  child: Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          otherUser, 
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (conv['isGroup'] == true) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(color: const Color(0xFF2979FF).withValues(alpha: 0.1), borderRadius: BorderRadius.circular(4)),
+                          child: const Text("GROUP", style: TextStyle(color: Color(0xFF2979FF), fontSize: 8, fontWeight: FontWeight.w900)),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                Text(DateFormat('h:mm a').format(DateTime.parse(conv['timestamp'])), style: const TextStyle(color: Colors.white24, fontSize: 12)),
               ],
+            ),
+            subtitle: Padding(
+              padding: const EdgeInsets.only(top: 5),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(child: Text(lastMsg, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: (conv['unreadCount'] ?? 0) > 0 ? Colors.white : Colors.white38, fontSize: 14, fontWeight: (conv['unreadCount'] ?? 0) > 0 ? FontWeight.bold : FontWeight.normal))),
+                  if ((conv['unreadCount'] ?? 0) > 0) Container(padding: const EdgeInsets.all(6), decoration: const BoxDecoration(color: Color(0xFF2979FF), shape: BoxShape.circle), child: Text("${conv['unreadCount']}", style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold))),
+                ],
+              ),
             ),
           ),
         );
@@ -371,7 +601,7 @@ class _HomeScreenContentState extends State<HomeScreenContent> {
     }
 
     return ListView(
-      padding: const EdgeInsets.symmetric(horizontal: 10),
+      padding: const EdgeInsets.fromLTRB(10, 0, 10, 100),
       children: [
         if (users.isNotEmpty) ...[
           _buildSearchSectionHeader("People"),
@@ -405,12 +635,33 @@ class _HomeScreenContentState extends State<HomeScreenContent> {
   Widget _buildUserSearchResult(Map<String, dynamic> user) {
     final username = user['username'] as String;
     return ListTile(
-      leading: CircleAvatar(backgroundColor: const Color(0xFF16233A), backgroundImage: user['profilePic'] != null ? NetworkImage(user['profilePic']) : null, child: user['profilePic'] == null ? const Icon(Icons.person, color: Colors.white) : null),
+      leading: CircleAvatar(
+        backgroundColor: const Color(0xFF16233A), 
+        backgroundImage: user['profilePic'] != null ? NetworkImage(user['profilePic']) : null, 
+        child: user['profilePic'] == null ? const Icon(Icons.person, color: Colors.white) : null
+      ),
       title: Text(username, style: const TextStyle(color: Colors.white)),
       subtitle: Text(user['about'] ?? "Available", style: const TextStyle(color: Colors.white38, fontSize: 12)),
+      trailing: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: user['relationship'] == 'contact' ? const Color(0xFF00C48C).withValues(alpha: 0.1) : Colors.white.withValues(alpha: 0.05),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Text(
+          user['relationship'] == 'contact' ? "Contact" : "View Profile",
+          style: TextStyle(
+            color: user['relationship'] == 'contact' ? const Color(0xFF00C48C) : Colors.white38,
+            fontSize: 10,
+            fontWeight: FontWeight.bold
+          ),
+        ),
+      ),
       onTap: () {
         setState(() => _isSearching = false);
-        Navigator.of(context).push(MaterialPageRoute(builder: (context) => ChatScreen(username: username)));
+        Navigator.of(context).push(MaterialPageRoute(
+          builder: (context) => ContactProfileScreen(username: username)
+        ));
       },
     );
   }
@@ -441,7 +692,11 @@ class _HomeScreenContentState extends State<HomeScreenContent> {
       trailing: Text(DateFormat('MMM d').format(DateTime.parse(msg['created_at'])), style: const TextStyle(color: Colors.white24, fontSize: 10)),
       onTap: () {
         setState(() => _isSearching = false);
-        Navigator.of(context).push(MaterialPageRoute(builder: (context) => ChatScreen(username: otherUser ?? "")));
+        Navigator.of(context).push(MaterialPageRoute(builder: (context) => ChatScreen(
+          username: otherUser ?? "",
+          groupId: msg['group_id'],
+          targetMessageId: msg['id'].toString(),
+        )));
       },
     );
   }
